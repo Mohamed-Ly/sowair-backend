@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
+    "prestart": "npx prisma migrate deploy",
     "start": "node app.js",
     "run:dev": "nodemon app.js",
     "build": "prisma generate",
