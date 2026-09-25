@@ -28,8 +28,8 @@ exports.createCategory = async (req, res) => {
         slug,
         image: req.file
           ? `/uploads/${req.file.filename}`
-          : req.body.image && req.body.image.trim()
-          ? req.body.image.trim()
+          : typeof req.body.image === "string"
+          ? req.body.image.trim() || null
           : null,
         isActive:
           isActive === undefined || isActive === null
