@@ -1,6 +1,6 @@
 datasource db {
   provider = "mysql"
-  // url      = env("DATABASE_URL")
+  url      = env("DATABASE_URL")
 }
 
 generator client {
@@ -10,6 +10,7 @@ generator client {
 enum Role {
   ADMIN
   CUSTOMER
+  DELIVERY
 }
 
 model User {
@@ -27,6 +28,7 @@ model User {
   Wishlist      Wishlist?
   Notification  Notification[]
   DeviceToken   DeviceToken[]
+  DeliveryAssignment DeliveryAssignment[] @relation("DeliveryAssignments")
 }
 
 model Brand {
@@ -34,6 +36,7 @@ model Brand {
   name       String       @unique
   slug       String       @unique
   country    String?
+  image      String?
   isActive   Boolean      @default(true)
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
@@ -47,14 +50,21 @@ model Category {
   id              Int               @id @default(autoincrement())
   name            String
   slug            String            @unique
+  image           String?
   isActive        Boolean           @default(true)
+  parentId        Int? // التصنيف الأب (للتصنيفات الهرمية: ملابس ← رجالي/نسائي...)
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
+
+  parent          Category?         @relation("CategoryTree", fields: [parentId], references: [id])
+  children        Category[]        @relation("CategoryTree")
+
   products        Product[]
   ProductCategory ProductCategory[]
   OfferCategory   OfferCategory[]
 
   @@index([name])
+  @@index([parentId])
 }
 
 model Product {
@@ -94,12 +104,12 @@ model ProductImage {
   @@index([productId])
 }
 
-// لبمتغيرات الخاصة بالمنتج مثل السعر/التركيز للعطر/المخزون/الكود أو الباركود
+// المتغيرات الخاصة بالمنتج (خيارات عامة تناسب أي نوع منتج) مع السعر/المخزون/الكود/الباركود
 model ProductVariant {
   id            Int      @id @default(autoincrement())
   productId     Int
-  sizeMl        Int? // مثال: 50، 100 (اختياري)
-  concentration String? // مثال: "EDP", "EDT" (اختياري)
+  option1       String? // خيار عام (المقاس L/XL، الحجم 100 مل، اللون أحمر...)
+  option2       String? // خيار عام إضافي (اللون/التركيز/الطراز...)
   priceCents    Int // السعر بـالسنت/القرش (إلزامي >= 0)
   stockQty      Int      @default(0) // المخزون (>= 0)
   sku           String? // كود داخلي (اختياري)
@@ -112,7 +122,7 @@ model ProductVariant {
   CartItem  CartItem[]
   OrderItem OrderItem[]
 
-  @@unique([productId, sizeMl, concentration]) // يمنع تكرار نفس (الحجم + التركيز) لنفس المنتج
+  @@unique([productId, option1, option2]) // يمنع تكرار نفس (الخيارين) لنفس المنتج
   @@index([productId])
   @@index([sku])
   @@index([barcode])
@@ -130,11 +140,12 @@ model ProductCategory {
 
 model Cart {
   id        Int      @id @default(autoincrement())
-  userId    Int      @unique
+  userId    Int?     @unique
+  guestId   String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user  User       @relation(fields: [userId], references: [id])
+  user  User?      @relation(fields: [userId], references: [id])
   items CartItem[]
 }
 
@@ -166,7 +177,7 @@ model Order {
   userId     Int
   status     OrderStatus @default(PENDING)
   totalCents Int // الإجمالي بالسنت
-  currency   String      @default("SAR")
+  currency   String      @default("LYD")
 
   // معلومات الشحن (مدمجة مع الطلب كما طلبت)
   shippingName    String
@@ -186,10 +197,48 @@ model Order {
   // العلاقات
   user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   items OrderItem[]
+  statusLogs OrderStatusLog[]
+  DeliveryAssignment DeliveryAssignment?
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+}
+
+// سجل حركة حالة الطلب (للتقارير والتتبع)
+model OrderStatusLog {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  status    String // OrderStatus كنص للأمان (PENDING/CONFIRMED/SHIPPING/DELIVERED/CANCELLED)
+  note      String?
+  actorType String? // ADMIN / DELIVERY / SYSTEM / CUSTOMER
+  actorId   Int?
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// تعيين طلب إلى مندوب توصيل
+model DeliveryAssignment {
+  id            Int       @id @default(autoincrement())
+  orderId       Int       @unique
+  deliveryId    Int
+  status        String    @default("ASSIGNED") // ASSIGNED / ACCEPTED / DELIVERED / CANCELLED
+  assignedAt    DateTime  @default(now())
+  acceptedAt    DateTime?
+  deliveredAt   DateTime?
+  cancelledAt   DateTime?
+  note          String?
+
+  order       Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  deliveryUser User @relation("DeliveryAssignments", fields: [deliveryId], references: [id])
+
+  @@index([deliveryId])
+  @@index([status])
 }
 
 model OrderItem {
@@ -209,11 +258,12 @@ model OrderItem {
 
 model Wishlist {
   id        Int      @id @default(autoincrement())
-  userId    Int      @unique // كل مستخدم لديه wishlist واحدة
+  userId    Int?     @unique // كل مستخدم لديه wishlist واحدة
+  guestId   String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user  User           @relation(fields: [userId], references: [id])
+  user  User?          @relation(fields: [userId], references: [id])
   items WishlistItem[]
 }
 

@@ -2,14 +2,24 @@ const prisma = require("../config/prisma");
 const { sendSuccess, sendFail, sendError } = require("../utils/responseHelper");
 
 // ================= Helpers =================
-async function getOrCreateWishlist(userId) {
+// تحديد هوية المفضلة: مستخدم مسجّل (userId) أو زائر (guestId من الرأس x-guest-id)
+async function resolveOwner(req) {
+  if (req.user && req.user.sub) return { userId: req.user.sub };
+  const guestId = req.headers["x-guest-id"];
+  if (guestId && String(guestId).trim()) {
+    return { guestId: String(guestId).trim() };
+  }
+  return null;
+}
+
+async function getOrCreateWishlist(owner) {
   let wishlist = await prisma.wishlist.findUnique({ 
-    where: { userId } 
+    where: owner 
   });
   
   if (!wishlist) {
     wishlist = await prisma.wishlist.create({ 
-      data: { userId } 
+      data: owner 
     });
   }
   
@@ -79,8 +89,9 @@ async function loadWishlist(wishlistId) {
 // GET /api/wishlist - عرض قائمة المفضلة
 exports.getWishlist = async (req, res) => {
   try {
-    const userId = req.user.sub;
-    const wishlist = await getOrCreateWishlist(userId);
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
+    const wishlist = await getOrCreateWishlist(owner);
     const fullWishlist = await loadWishlist(wishlist.id);
     
     return sendSuccess(res, { wishlist: fullWishlist }, 200);
@@ -92,7 +103,8 @@ exports.getWishlist = async (req, res) => {
 // POST /api/wishlist/items - إضافة منتج للمفضلة
 exports.addItem = async (req, res) => {
   try {
-    const userId = req.user.sub;
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
     const { productId } = req.body;
 
     // التحقق من وجود المنتج
@@ -111,7 +123,7 @@ exports.addItem = async (req, res) => {
       return sendFail(res, { message: "المنتج غير متاح حالياً" }, 400);
     }
 
-    const wishlist = await getOrCreateWishlist(userId);
+    const wishlist = await getOrCreateWishlist(owner);
 
     // التحقق إذا المنتج موجود مسبقاً
     const existingItem = await prisma.wishlistItem.findUnique({
@@ -149,10 +161,11 @@ exports.addItem = async (req, res) => {
 // DELETE /api/wishlist/items/:id - إزالة منتج من المفضلة
 exports.removeItem = async (req, res) => {
   try {
-    const userId = req.user.sub;
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
     const itemId = Number(req.params.id);
 
-    const wishlist = await getOrCreateWishlist(userId);
+    const wishlist = await getOrCreateWishlist(owner);
     
     // البحث عن العنصر والتأكد أنه للمستخدم
     const item = await prisma.wishlistItem.findFirst({
@@ -184,8 +197,9 @@ exports.removeItem = async (req, res) => {
 // DELETE /api/wishlist/clear - إفراغ المفضلة
 exports.clearWishlist = async (req, res) => {
   try {
-    const userId = req.user.sub;
-    const wishlist = await getOrCreateWishlist(userId);
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
+    const wishlist = await getOrCreateWishlist(owner);
 
     await prisma.wishlistItem.deleteMany({
       where: { wishlistId: wishlist.id }
@@ -205,8 +219,9 @@ exports.clearWishlist = async (req, res) => {
 // GET /api/wishlist/count - عداد العناصر
 exports.getWishlistCount = async (req, res) => {
   try {
-    const userId = req.user.sub;
-    const wishlist = await getOrCreateWishlist(userId);
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
+    const wishlist = await getOrCreateWishlist(owner);
 
     const itemCount = await prisma.wishlistItem.count({
       where: { wishlistId: wishlist.id }
@@ -225,10 +240,11 @@ exports.getWishlistCount = async (req, res) => {
 exports.moveToCart = async (req, res) => {
   const txn = await prisma.$transaction(async (prisma) => {
     try {
-      const userId = req.user.sub;
+      const owner = await resolveOwner(req);
+      if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
       const itemId = Number(req.params.id);
 
-      const wishlist = await getOrCreateWishlist(userId);
+      const wishlist = await getOrCreateWishlist(owner);
       
       // البحث عن العنصر في المفضلة
       const wishlistItem = await prisma.wishlistItem.findFirst({
@@ -262,9 +278,9 @@ exports.moveToCart = async (req, res) => {
       const variant = wishlistItem.product.ProductVariant[0];
 
       // الحصول على سلة المستخدم أو إنشاؤها
-      let cart = await prisma.cart.findUnique({ where: { userId } });
+      let cart = await prisma.cart.findUnique({ where: owner });
       if (!cart) {
-        cart = await prisma.cart.create({ data: { userId } });
+        cart = await prisma.cart.create({ data: owner });
       }
 
       // التحقق إذا المنتج موجود في السلة

@@ -1,5 +1,6 @@
 const router = require("express").Router();
 const verifyToken = require("../middlewares/verifyToken");
+const { optionalAuth } = require("../middlewares/verifyToken");
 const checkRole = require("../middlewares/checkRole");
 const { handleValidation } = require("../middlewares/handleValidation");
 const {
@@ -52,9 +53,10 @@ router.patch(
 router.patch("/read-all", verifyToken, markAllAsRead);
 
 // ===================== DEVICE TOKEN ROUTES (داخل Feature الإشعارات) =====================
-// ملاحظة: نسمح بدون verifyToken حتى يعمل قبل تسجيل الدخول (اختياري)
+// optionalAuth: يسمح بدون تسجيل دخول (أول تشغيل) ويربط التوكن بالمستخدم إن وُجد توكن صالح
 router.post(
   "/devices/register",
+  optionalAuth,
   registerDeviceValidation,
   handleValidation,
   registerDevice

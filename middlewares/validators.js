@@ -1,5 +1,5 @@
 // middlewares/validation.js
-const { body, param } = require("express-validator");
+const { body, param, query } = require("express-validator");
 
 // يسمح بأرقام تبدأ بـ + أو رقم، مع فراغات وشرطات
 const phoneRegex = /^[+\d][\d\s-]{5,}$/;
@@ -53,6 +53,10 @@ exports.createCategoryValidation = [
     .isLength({ min: 2, max: 80 })
     .withMessage("السلاق يجب ألا يقل عن 2 أحرف"),
   body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("parentId")
+    .optional({ nullable: true, checkFalsy: true })
+    .isInt({ gt: 0 })
+    .withMessage("التصنيف الأب غير صالح"),
 ];
 
 exports.updateCategoryValidation = [
@@ -68,6 +72,10 @@ exports.updateCategoryValidation = [
     .isLength({ min: 2, max: 80 })
     .withMessage("السلاق يجب ألا يقل عن 2 أحرف"),
   body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("parentId")
+    .optional({ nullable: true, checkFalsy: true })
+    .isInt({ gt: 0 })
+    .withMessage("التصنيف الأب غير صالح"),
 ];
 
 exports.categoryIdParamValidation = [
@@ -199,7 +207,17 @@ exports.updateProductValidation = [
   body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
   body("removeImageIds")
     .optional()
-    .isArray()
+    .custom((value) => {
+      if (Array.isArray(value)) return true;
+      if (typeof value === "string") {
+        try {
+          return Array.isArray(JSON.parse(value));
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    })
     .withMessage("قائمة الصور المراد حذفها يجب أن تكون مصفوفة"),
 ];
 
@@ -239,14 +257,14 @@ exports.createVariantValidation = [
     .optional()
     .isInt({ min: 0 })
     .withMessage("المخزون يجب أن يكون 0 أو أكبر"),
-  body("sizeMl")
+  body("option1")
     .optional()
-    .isInt({ min: 1, max: 10000 })
-    .withMessage("الحجم غير صالح"),
-  body("concentration")
+    .isLength({ min: 1, max: 120 })
+    .withMessage("الخيار الأول غير صالح"),
+  body("option2")
     .optional()
-    .isLength({ min: 2, max: 10 })
-    .withMessage("التركيز غير صالح"),
+    .isLength({ min: 1, max: 120 })
+    .withMessage("الخيار الثاني غير صالح"),
   body("sku")
     .optional()
     .isLength({ min: 1, max: 180 })
@@ -268,14 +286,14 @@ exports.updateVariantValidation = [
     .optional()
     .isInt({ min: 0 })
     .withMessage("المخزون يجب أن يكون 0 أو أكبر"),
-  body("sizeMl")
+  body("option1")
     .optional()
-    .isInt({ min: 1, max: 10000 })
-    .withMessage("الحجم غير صالح"),
-  body("concentration")
+    .isLength({ min: 1, max: 120 })
+    .withMessage("الخيار الأول غير صالح"),
+  body("option2")
     .optional()
-    .isLength({ min: 2, max: 10 })
-    .withMessage("التركيز غير صالح"),
+    .isLength({ min: 1, max: 120 })
+    .withMessage("الخيار الثاني غير صالح"),
   body("sku")
     .optional()
     .isLength({ min: 1, max: 180 })
@@ -678,9 +696,60 @@ exports.updateUserValidation = [
   //   .withMessage("الدور غير صالح"),
 ];
 
+exports.updateUserRoleValidation = [
+  param("id").isInt({ gt: 0 }).withMessage("معرّف المستخدم غير صالح"),
+  body("role")
+    .trim()
+    .notEmpty()
+    .withMessage("الدور مطلوب")
+    .isIn(["ADMIN", "CUSTOMER", "DELIVERY"])
+    .withMessage("الدور غير صالح"),
+];
+
 // exports.adminUsersQueryValidation = [
 //   query("page").optional().isInt({ gt: 0 }).withMessage("رقم الصفحة غير صالح"),
 //   query("limit").optional().isInt({ gt: 0, lt: 101 }).withMessage("الحد يجب أن يكون بين 1 و 100"),
 //   query("role").optional().isIn(["ADMIN", "CUSTOMER"]).withMessage("الدور غير صالح"),
 //   query("search").optional().isString().withMessage("نص البحث غير صالح"),
 // ];
+
+// ======================= Reports =======================
+exports.reportsQueryValidation = [
+  query("from")
+    .optional()
+    .isISO8601()
+    .withMessage("صيغة تاريخ البداية غير صحيحة"),
+  query("to")
+    .optional()
+    .isISO8601()
+    .withMessage("صيغة تاريخ النهاية غير صحيحة"),
+  query("granularity")
+    .optional()
+    .isIn(["day", "week", "month"])
+    .withMessage("وحدة التجميع يجب أن تكون day أو week أو month"),
+  query("type")
+    .optional()
+    .isIn(["sales", "products", "orders"])
+    .withMessage("نوع التقرير غير صالح"),
+  query("format")
+    .optional()
+    .isIn(["csv", "pdf"])
+    .withMessage("صيغة التصدير يجب أن تكون csv أو pdf"),
+  query("limit")
+    .optional()
+    .isInt({ gt: 0, lt: 101 })
+    .withMessage("الحد يجب أن يكون بين 1 و 100"),
+];
+
+// ======================= Delivery =======================
+exports.assignmentIdParamValidation = [
+  param("assignmentId")
+    .isInt({ gt: 0 })
+    .withMessage("معرّف المهمة غير صالح"),
+];
+
+exports.assignDeliveryValidation = [
+  body("orderId").isInt({ gt: 0 }).withMessage("معرّف الطلب غير صالح"),
+  body("deliveryId").isInt({ gt: 0 }).withMessage("معرّف المندوب غير صالح"),
+  body("note").optional().trim().isLength({ max: 200 }).withMessage("الملاحظة طويلة جداً"),
+];

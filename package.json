@@ -3,7 +3,14 @@
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
-    "run:dev": "nodemon app.js"
+    "start": "node app.js",
+    "run:dev": "nodemon app.js",
+    "build": "prisma generate",
+    "postinstall": "prisma generate",
+    "seed": "node prisma/seed.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "keywords": [],
   "author": "",
@@ -11,18 +18,25 @@
   "description": "",
   "dependencies": {
     "@prisma/client": "^6.16.2",
+    "arabic-reshaper": "^1.1.0",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
+    "bidi-js": "^1.1.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^4.20.0",
+    "express-rate-limit": "^8.4.1",
     "express-validator": "^7.2.1",
     "firebase-admin": "^13.5.0",
+    "helmet": "^8.1.0",
+    "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.15.0",
     "nodemon": "^3.1.10",
-    "validator": "^13.15.15"
+    "pdfkit": "^0.20.2",
+    "validator": "^13.15.15",
+    "xss-clean": "^0.1.4"
   },
   "devDependencies": {
     "prisma": "^6.16.2"

@@ -98,6 +98,16 @@ exports.createOrder = async (req, res) => {
       // 5) تفريغ السلة
       await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
 
+      // 6) تسجيل حركة الحالة الأولية
+      await tx.orderStatusLog.create({
+        data: {
+          orderId: created.id,
+          status: "PENDING",
+          actorType: "SYSTEM",
+          note: "تم إنشاء الطلب",
+        },
+      });
+
       return created; // نُعيد الطلب فقط
     });
 
@@ -363,6 +373,37 @@ exports.cancelOrderByUser = async (req, res) => {
 
       // إرجاع المخزون
       await returnStock(orderId);
+
+      // تسجيل حركة الإلغاء
+      await prisma.orderStatusLog.create({
+        data: {
+          orderId,
+          status: "CANCELLED",
+          actorType: "CUSTOMER",
+          actorId: userId,
+          note: reason || "ألغاه المستخدم",
+        },
+      });
+
+      // إشعار المستخدم بالإلغاء
+      try {
+        const { title, body } = buildOrderStatusMessage({
+          status: "CANCELLED",
+          orderNumber: updatedOrder.orderNumber,
+        });
+        await sendUserNotification({
+          userId,
+          type: "ORDER_CANCELLED",
+          title,
+          body,
+          data: {
+            orderId: String(orderId),
+            orderNumber: updatedOrder.orderNumber,
+          },
+        });
+      } catch (e) {
+        console.error("Failed to send cancel notification:", e.message);
+      }
 
       return sendSuccess(
         res,
@@ -645,6 +686,17 @@ exports.updateOrderStatus = async (req, res) => {
               },
             },
           },
+        },
+      });
+
+      // تسجيل حركة الحالة
+      await tx.orderStatusLog.create({
+        data: {
+          orderId,
+          status,
+          actorType: req.user?.role === "DELIVERY" ? "DELIVERY" : "ADMIN",
+          actorId: req.user?.sub ?? null,
+          note: cancelledReason || null,
         },
       });
 

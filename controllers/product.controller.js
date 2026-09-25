@@ -233,9 +233,15 @@ exports.listProducts = async (req, res) => {
           images: { orderBy: [{ sortOrder: "asc" }] },
           brand: true,
           category: true,
+          ProductVariant: true,
         },
       }),
     ]);
+
+    const formattedItems = items.map(item => {
+      const { ProductVariant, ...rest } = item;
+      return { ...rest, variants: ProductVariant || [] };
+    });
 
     return sendSuccess(
       res,
@@ -243,7 +249,7 @@ exports.listProducts = async (req, res) => {
         total,
         page,
         pages: Math.ceil(total / limit),
-        items,
+        items: formattedItems,
       },
       200
     );
@@ -262,10 +268,15 @@ exports.getProduct = async (req, res) => {
         images: { orderBy: [{ sortOrder: "asc" }] },
         brand: true,
         category: true,
+        ProductVariant: true,
       },
     });
     if (!product) return sendFail(res, { message: "المنتج غير موجود" }, 404);
-    return sendSuccess(res, { product }, 200);
+
+    const { ProductVariant, ...rest } = product;
+    const formattedProduct = { ...rest, variants: ProductVariant || [] };
+
+    return sendSuccess(res, { product: formattedProduct }, 200);
   } catch (e) {
     return sendError(res, e.message, 500);
   }

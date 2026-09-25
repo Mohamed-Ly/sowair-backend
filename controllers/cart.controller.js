@@ -3,10 +3,20 @@ const prisma = require("../config/prisma");
 const { sendSuccess, sendFail, sendError } = require("../utils/responseHelper");
 
 // ================= Helpers =================
-async function getOrCreateCart(userId) {
-  let cart = await prisma.cart.findUnique({ where: { userId } });
+// تحديد هوية السلة: مستخدم مسجّل (userId) أو زائر (guestId من الرأس x-guest-id)
+async function resolveOwner(req) {
+  if (req.user && req.user.sub) return { userId: req.user.sub };
+  const guestId = req.headers["x-guest-id"];
+  if (guestId && String(guestId).trim()) {
+    return { guestId: String(guestId).trim() };
+  }
+  return null;
+}
+
+async function getOrCreateCart(owner) {
+  let cart = await prisma.cart.findUnique({ where: owner });
   if (!cart) {
-    cart = await prisma.cart.create({ data: { userId } });
+    cart = await prisma.cart.create({ data: owner });
   }
   return cart;
 }
@@ -81,8 +91,9 @@ async function loadCart(cartId) {
 // GET /api/cart
 exports.getCart = async (req, res) => {
   try {
-    const userId = req.user.sub;
-    const cart = await getOrCreateCart(userId);
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
+    const cart = await getOrCreateCart(owner);
     const full = await loadCart(cart.id);
     return sendSuccess(res, { cart: full }, 200);
   } catch (e) {
@@ -93,7 +104,8 @@ exports.getCart = async (req, res) => {
 // POST /api/cart/items
 exports.addItem = async (req, res) => {
   try {
-    const userId = req.user.sub;
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
     const { variantId, qty } = req.body;
 
     const variant = await prisma.productVariant.findUnique({
@@ -107,7 +119,7 @@ exports.addItem = async (req, res) => {
     if (qty <= 0)
       return sendFail(res, { message: "الكمية يجب أن تكون أكبر من 0" }, 422);
 
-    const cart = await getOrCreateCart(userId);
+    const cart = await getOrCreateCart(owner);
 
     // هل العنصر موجود؟
     const existingItem = await prisma.cartItem.findUnique({
@@ -151,14 +163,15 @@ exports.addItem = async (req, res) => {
 // PATCH /api/cart/items/:itemId
 exports.updateItemQty = async (req, res) => {
   try {
-    const userId = req.user.sub;
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
     const itemId = Number(req.params.itemId);
     const { qty } = req.body;
 
     if (qty <= 0)
       return sendFail(res, { message: "الكمية يجب أن تكون أكبر من 0" }, 422);
 
-    const cart = await getOrCreateCart(userId);
+    const cart = await getOrCreateCart(owner);
 
     const item = await prisma.cartItem.findFirst({
       where: { id: itemId, cartId: cart.id },
@@ -187,10 +200,11 @@ exports.updateItemQty = async (req, res) => {
 // DELETE /api/cart/items/:itemId
 exports.removeItem = async (req, res) => {
   try {
-    const userId = req.user.sub;
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
     const itemId = Number(req.params.itemId);
 
-    const cart = await getOrCreateCart(userId);
+    const cart = await getOrCreateCart(owner);
     const item = await prisma.cartItem.findFirst({
       where: { id: itemId, cartId: cart.id },
     });
@@ -209,8 +223,9 @@ exports.removeItem = async (req, res) => {
 // DELETE /api/cart/clear
 exports.clearCart = async (req, res) => {
   try {
-    const userId = req.user.sub;
-    const cart = await getOrCreateCart(userId);
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
+    const cart = await getOrCreateCart(owner);
 
     await prisma.cartItem.deleteMany({ where: { cartId: cart.id } });
 
@@ -224,8 +239,9 @@ exports.clearCart = async (req, res) => {
 // GET /api/cart/count
 exports.countCart = async (req, res) => {
   try {
-    const userId = req.user.sub;
-    const cart = await getOrCreateCart(userId);
+    const owner = await resolveOwner(req);
+    if (!owner) return sendFail(res, { message: "يجب تسجيل الدخول" }, 401);
+    const cart = await getOrCreateCart(owner);
 
     const items = await prisma.cartItem.findMany({
       where: { cartId: cart.id },

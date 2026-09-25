@@ -18,19 +18,19 @@ const convertOfferData = (data) => {
   ];
 
   numericFields.forEach((field) => {
-    if (
-      converted[field] !== undefined &&
-      converted[field] !== null &&
-      converted[field] !== ""
-    ) {
-      converted[field] = parseInt(converted[field]);
+    const value = converted[field];
+    if (value === undefined) {
+      // الحقل لم يُرسل: لا تتطرق له (مهم لتحديث جزئي)
+      return;
+    }
+    if (value === null || value === "") {
+      converted[field] = null;
+      console.log(`➖ Set ${field} to null`);
+    } else {
+      converted[field] = parseInt(value);
       console.log(
         `🔢 Converted ${field}: ${data[field]} -> ${converted[field]}`
       );
-    } else {
-      // إذا كانت القيمة فارغة، اجعلها null
-      converted[field] = null;
-      console.log(`➖ Set ${field} to null`);
     }
   });
 
@@ -163,8 +163,9 @@ exports.getOfferById = async (req, res) => {
 
 // POST /api/admin/offers - إنشاء عرض جديد
 exports.createOffer = async (req, res) => {
-  const txn = await prisma.$transaction(async (prisma) => {
-    try {
+  try {
+    const txn = await prisma.$transaction(async (prisma) => {
+      try {
       const {
         title,
         description,
@@ -255,21 +256,25 @@ exports.createOffer = async (req, res) => {
         },
         201
       );
-    } catch (error) {
-      console.error("❌ Error in createOffer:", error);
-      // إذا فشل الإنشاء، احذف الصورة المرفوعة
-      if (req.file) {
-        fs.unlinkSync(req.file.path);
+      } catch (error) {
+        console.error("❌ Error in createOffer:", error);
+        // إذا فشل الإنشاء، احذف الصورة المرفوعة
+        if (req.file) {
+          fs.unlinkSync(req.file.path);
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    });
+  } catch (error) {
+    return sendError(res, error.message, 500);
+  }
 };
 
 // PUT /api/admin/offers/:id - تحديث عرض
 exports.updateOffer = async (req, res) => {
-  const txn = await prisma.$transaction(async (prisma) => {
-    try {
+  try {
+    const txn = await prisma.$transaction(async (prisma) => {
+      try {
       const offerId = parseInt(req.params.id);
       const updateData = req.body;
 
@@ -304,6 +309,11 @@ exports.updateOffer = async (req, res) => {
 
       // 🔥 تحويل البيانات هنا في الباك إند
       const convertedOfferData = convertOfferData(offerData);
+
+      // displayOrder حقل مطلوب في النموذج - منع إرسال null صراحةً له
+      if (convertedOfferData.displayOrder === null) {
+        delete convertedOfferData.displayOrder;
+      }
 
       // تحديث العرض الأساسي
       const updatedOffer = await prisma.offer.update({
@@ -372,8 +382,11 @@ exports.updateOffer = async (req, res) => {
         fs.unlinkSync(req.file.path);
       }
       throw error;
-    }
-  });
+      }
+    });
+  } catch (error) {
+    return sendError(res, error.message, 500);
+  }
 };
 
 // GET /api/admin/offers - جميع العروض (للأدمن)
@@ -438,8 +451,9 @@ exports.getAllOffers = async (req, res) => {
 
 // DELETE /api/admin/offers/:id - حذف عرض
 exports.deleteOffer = async (req, res) => {
-  const txn = await prisma.$transaction(async (prisma) => {
-    try {
+  try {
+    const txn = await prisma.$transaction(async (prisma) => {
+      try {
       const offerId = parseInt(req.params.id);
 
       // التحقق من وجود العرض
@@ -478,8 +492,11 @@ exports.deleteOffer = async (req, res) => {
       );
     } catch (error) {
       throw error;
-    }
-  });
+      }
+    });
+  } catch (error) {
+    return sendError(res, error.message, 500);
+  }
 };
 
 // PATCH /api/admin/offers/:id/toggle - تفعيل/تعطيل عرض

@@ -70,7 +70,7 @@ exports.getSingleUser = async (req, res) => {
         name: true,
         email: true,
         phone: true,
-        // role: true,
+        role: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -214,6 +214,38 @@ exports.updateUser = async (req, res) => {
   }
 };
 
+// PATCH /api/users/admin/:id/role - تغيير دور مستخدم (أدمن فقط)
+exports.updateUserRole = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { role } = req.body;
+    const existing = await prisma.user.findUnique({ where: { id } });
+    if (!existing) return sendFail(res, { message: "المستخدم غير موجود" }, 404);
+
+    if (existing.id === req.user.sub) {
+      return sendFail(res, { message: "لا يمكنك تغيير دورك الخاص" }, 400);
+    }
+
+    const user = await prisma.user.update({
+      where: { id },
+      data: { role },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return sendSuccess(res, { user }, 200);
+  } catch (error) {
+    return sendError(res, error.message, 500);
+  }
+};
+
 // GET /api/users/count - عداد المستخدمين (للأدمن فقط)
 exports.getUsersCount = async (req, res) => {
   try {
@@ -222,6 +254,9 @@ exports.getUsersCount = async (req, res) => {
       where: { role: "CUSTOMER" },
     });
     const adminsCount = await prisma.user.count({ where: { role: "ADMIN" } });
+    const deliveriesCount = await prisma.user.count({
+      where: { role: "DELIVERY" },
+    });
 
     return sendSuccess(
       res,
@@ -230,6 +265,7 @@ exports.getUsersCount = async (req, res) => {
           total: totalUsers,
           customers: customersCount,
           admins: adminsCount,
+          deliveries: deliveriesCount,
         },
       },
       200

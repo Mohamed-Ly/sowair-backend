@@ -1,6 +1,7 @@
 const router = require("express").Router();
 const verifyToken = require("../middlewares/verifyToken");
 const checkRole = require("../middlewares/checkRole");
+const upload = require("../middlewares/upload");
 const { handleValidation } = require("../middlewares/handleValidation");
 
 const {
@@ -24,9 +25,9 @@ router.get("/", handleValidation, listBrands);
 router.get("/count", verifyToken, checkRole("ADMIN"), handleValidation, countBrands);
 router.get("/:id", brandIdParamValidation, handleValidation, getBrand);
 
-// أدمن (إنشاء/تحديث/حذف)
-router.post("/", verifyToken, checkRole("ADMIN"), createBrandValidation, handleValidation, createBrand);
-router.patch("/:id", verifyToken, checkRole("ADMIN"), updateBrandValidation, handleValidation, updateBrand);
+// أدمن إنشاء/تحديث/حذف (حقل image: ملف اختياري أو نص URL في JSON)
+router.post("/", verifyToken, checkRole("ADMIN"), upload.single("image"), createBrandValidation, handleValidation, createBrand);
+router.patch("/:id", verifyToken, checkRole("ADMIN"), upload.single("image"), updateBrandValidation, handleValidation, updateBrand);
 router.delete("/:id", verifyToken, checkRole("ADMIN"), brandIdParamValidation, handleValidation, deleteBrand);
 
 module.exports = router;

@@ -22,7 +22,7 @@ const {
 } = require("../controllers/product.controller");
 
 // عامة
-router.get("/", handleValidation, listProducts);
+router.get("/", listProducts);
 
 // عدّاد (لوحة التحكم) — ضعه قبل :id لتفادي التعارض
 router.get(

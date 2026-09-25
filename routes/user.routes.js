@@ -5,6 +5,7 @@ const { handleValidation } = require("../middlewares/handleValidation");
 const {
   userIdParamValidation,
   updateUserValidation,
+  updateUserRoleValidation,
   //   adminUsersQueryValidation,
 } = require("../middlewares/validators");
 
@@ -14,6 +15,7 @@ const {
   updateUser,
   deleteUser,
   getUsersCount,
+  updateUserRole,
 } = require("../controllers/user.controller");
 
 // ===================== PUBLIC ROUTES =====================
@@ -33,7 +35,7 @@ router.get(
 router.put(
   "/profile/:id",
   verifyToken,
-  checkRole("ADMIN", "CUSTOMER"),
+  checkRole("ADMIN", "CUSTOMER", "DELIVERY"),
   updateUserValidation,
   handleValidation,
   updateUser
@@ -66,6 +68,16 @@ router.delete(
   userIdParamValidation,
   handleValidation,
   deleteUser
+);
+
+// 🎖️ تغيير دور مستخدم (تفعيل مندوب → DELIVERY)
+router.patch(
+  "/admin/:id/role",
+  verifyToken,
+  checkRole("ADMIN"),
+  updateUserRoleValidation,
+  handleValidation,
+  updateUserRole
 );
 
 module.exports = router;

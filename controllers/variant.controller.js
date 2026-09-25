@@ -13,21 +13,21 @@ exports.createVariant = async (req, res) => {
     const product = await ensureProduct(productId);
     if (!product) return sendFail(res, { message: "المنتج غير موجود" }, 404);
 
-    const { sizeMl, concentration, priceCents, stockQty, sku, barcode, isActive } = req.body;
+    const { option1, option2, priceCents, stockQty, sku, barcode, isActive } = req.body;
 
-    // منع تكرار نفس (الحجم + التركيز) لنفس المنتج
-    if (sizeMl || concentration) {
+    // منع تكرار نفس (الخيارين) لنفس المنتج
+    if (option1 || option2) {
       const dup = await prisma.productVariant.findFirst({
-        where: { productId, sizeMl: sizeMl ? Number(sizeMl) : null, concentration: concentration || null }
+        where: { productId, option1: option1 || null, option2: option2 || null }
       });
-      if (dup) return sendFail(res, { message: "متغير بهذا (الحجم/التركيز) موجود مسبقًا" }, 400);
+      if (dup) return sendFail(res, { message: "متغير بهذه (الخيارات) موجود مسبقًا" }, 400);
     }
 
     const variant = await prisma.productVariant.create({
       data: {
         productId,
-        sizeMl: sizeMl ? Number(sizeMl) : null,
-        concentration: concentration || null,
+        option1: option1 || null,
+        option2: option2 || null,
         priceCents: Number(priceCents),
         stockQty: stockQty ? Number(stockQty) : 0,
         sku: sku || null,
@@ -109,32 +109,32 @@ exports.updateVariant = async (req, res) => {
     });
     if (!existing) return sendFail(res, { message: "المتغير غير موجود" }, 404);
 
-    let { sizeMl, concentration, priceCents, stockQty, sku, barcode, isActive } = req.body;
+    let { option1, option2, priceCents, stockQty, sku, barcode, isActive } = req.body;
 
-    // التحقق من عدم تكرار (sizeMl + concentration) لنفس المنتج عند التعديل
-    if (typeof sizeMl !== "undefined" || typeof concentration !== "undefined") {
-      const newSize = typeof sizeMl !== "undefined" ? (sizeMl === null || sizeMl === "" ? null : Number(sizeMl)) : existing.sizeMl;
-      const newConc = typeof concentration !== "undefined" ? (concentration || null) : existing.concentration;
+    // التحقق من عدم تكرار (option1 + option2) لنفس المنتج عند التعديل
+    if (typeof option1 !== "undefined" || typeof option2 !== "undefined") {
+      const newOpt1 = typeof option1 !== "undefined" ? (option1 === null || option1 === "" ? null : String(option1)) : existing.option1;
+      const newOpt2 = typeof option2 !== "undefined" ? (option2 === null || option2 === "" ? null : String(option2)) : existing.option2;
 
       const dup = await prisma.productVariant.findFirst({
         where: {
           productId,
-          sizeMl: newSize,
-          concentration: newConc,
+          option1: newOpt1,
+          option2: newOpt2,
           NOT: { id: variantId }
         }
       });
-      if (dup) return sendFail(res, { message: "متغير بهذا (الحجم/التركيز) موجود مسبقًا" }, 400);
+      if (dup) return sendFail(res, { message: "متغير بهذه (الخيارات) موجود مسبقًا" }, 400);
 
-      sizeMl = newSize;
-      concentration = newConc;
+      option1 = newOpt1;
+      option2 = newOpt2;
     }
 
     const updated = await prisma.productVariant.update({
       where: { id: variantId },
       data: {
-        sizeMl: typeof sizeMl !== "undefined" ? (sizeMl === null || sizeMl === "" ? null : Number(sizeMl)) : existing.sizeMl,
-        concentration: typeof concentration !== "undefined" ? (concentration || null) : existing.concentration,
+        option1: typeof option1 !== "undefined" ? (option1 === null || option1 === "" ? null : String(option1)) : existing.option1,
+        option2: typeof option2 !== "undefined" ? (option2 === null || option2 === "" ? null : String(option2)) : existing.option2,
         priceCents: typeof priceCents !== "undefined" ? Number(priceCents) : existing.priceCents,
         stockQty: typeof stockQty !== "undefined" ? Number(stockQty) : existing.stockQty,
         sku: typeof sku !== "undefined" ? (sku || null) : existing.sku,

@@ -1,6 +1,6 @@
 // routes/cart.routes.js
 const router = require("express").Router();
-const verifyToken = require("../middlewares/verifyToken");
+const { optionalAuth } = require("../middlewares/verifyToken");
 const { handleValidation } = require("../middlewares/handleValidation");
 const {
   addCartItemValidation,
@@ -17,8 +17,8 @@ const {
   countCart
 } = require("../controllers/cart.controller");
 
-// كل مسارات السلة تتطلب مستخدم مسجّل
-router.use(verifyToken);
+// مسارات السلة تسمح للمستخدم المسجّل أو الزائر (عبر x-guest-id)
+router.use(optionalAuth);
 
 // عرض السلة
 router.get("/", getCart);

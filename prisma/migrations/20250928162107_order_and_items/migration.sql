@@ -4,7 +4,7 @@ CREATE TABLE `Order` (
     `userId` INTEGER NOT NULL,
     `status` ENUM('PENDING', 'CONFIRMED', 'SHIPPING', 'DELIVERED', 'CANCELLED') NOT NULL DEFAULT 'PENDING',
     `totalCents` INTEGER NOT NULL,
-    `currency` VARCHAR(191) NOT NULL DEFAULT 'SAR',
+    `currency` VARCHAR(191) NOT NULL DEFAULT 'LYD',
     `shippingName` VARCHAR(191) NOT NULL,
     `shippingPhone` VARCHAR(191) NOT NULL,
     `shippingAddress` VARCHAR(191) NOT NULL,

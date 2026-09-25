@@ -5,7 +5,7 @@ const slugify = require("../utils/slugify");
 // POST /api/categories
 exports.createCategory = async (req, res) => {
   try {
-    let { name, slug, isActive } = req.body;
+    let { name, slug, isActive, parentId } = req.body;
     if (!slug || !slug.trim()) slug = slugify(name);
 
     // slug فريد
@@ -13,8 +13,33 @@ exports.createCategory = async (req, res) => {
     if (conflict)
       return sendFail(res, { message: "السلاق مستخدم بالفعل" }, 400);
 
+    // التحقق من تصنيف الأب إن وُجد
+    if (parentId) {
+      const parent = await prisma.category.findUnique({
+        where: { id: parseInt(parentId) },
+      });
+      if (!parent)
+        return sendFail(res, { message: "التصنيف الأب غير موجود" }, 400);
+    }
+
     const category = await prisma.category.create({
-      data: { name, slug, isActive: isActive ?? true },
+      data: {
+        name,
+        slug,
+        image: req.file
+          ? `/uploads/${req.file.filename}`
+          : req.body.image && req.body.image.trim()
+          ? req.body.image.trim()
+          : null,
+        isActive:
+          isActive === undefined || isActive === null
+            ? true
+            : typeof isActive === "boolean"
+            ? isActive
+            : String(isActive).toLowerCase() === "true",
+        parentId: parentId ? parseInt(parentId) : null,
+      },
+      include: { parent: true, children: { where: { isActive: true } } },
     });
 
     return sendSuccess(res, { category }, 201);
@@ -23,7 +48,8 @@ exports.createCategory = async (req, res) => {
   }
 };
 
-// GET /api/categories (قائمة كاملة، مع فلترة اختيارية بالاسم)
+// GET /api/categories (قائمة كاملة، مع فلترة اختيارية بالاسم أو التصنيف الأب)
+// parentId=null → تصنيفات جذرية فقط | parentId=رقم → أبناء تصنيف محدد
 exports.listCategories = async (req, res) => {
   try {
     const q = (req.query.q || "").trim();
@@ -31,14 +57,21 @@ exports.listCategories = async (req, res) => {
     const limit = parseInt(req.query.limit || "10", 10);
     const sortBy = req.query.sortBy || "name";
     const order = (req.query.order || "asc").toLowerCase();
+    const parentIdParam = req.query.parentId;
 
     const where = {};
     if (q) where.name = { contains: q };
+    if (parentIdParam && parentIdParam !== "null") {
+      where.parentId = parseInt(parentIdParam);
+    } else if (parentIdParam === "null") {
+      where.parentId = null;
+    }
 
     const [total, categories] = await Promise.all([
       prisma.category.count({ where }),
       prisma.category.findMany({
         where,
+        include: { parent: true, _count: { select: { products: true } } },
         orderBy: [{ [sortBy]: order }],
         skip: (page - 1) * limit,
         take: limit,
@@ -64,7 +97,14 @@ exports.listCategories = async (req, res) => {
 exports.getCategory = async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const category = await prisma.category.findUnique({ where: { id } });
+    const category = await prisma.category.findUnique({
+      where: { id },
+      include: {
+        parent: true,
+        children: { orderBy: { name: "asc" } },
+        products: { select: { id: true, name: true, slug: true } },
+      },
+    });
     if (!category) return sendFail(res, { message: "التصنيف غير موجود" }, 404);
     return sendSuccess(res, { category }, 200);
   } catch (e) {
@@ -98,7 +138,19 @@ exports.updateCategory = async (req, res) => {
     const existing = await prisma.category.findUnique({ where: { id } });
     if (!existing) return sendFail(res, { message: "التصنيف غير موجود" }, 404);
 
-    let { name, slug, isActive } = req.body;
+    let { name, slug, isActive, parentId } = req.body;
+
+    // منع أن يكون التصنيف أباً لنفسه
+    if (parentId) {
+      const parentIdNum = parseInt(parentId);
+      if (parentIdNum === id)
+        return sendFail(res, { message: "لا يمكن أن يكون التصنيف أباً لنفسه" }, 400);
+      const parent = await prisma.category.findUnique({
+        where: { id: parentIdNum },
+      });
+      if (!parent)
+        return sendFail(res, { message: "التصنيف الأب غير موجود" }, 400);
+    }
 
     if (slug && slug.trim()) {
       // تأكد عدم وجود تعارض
@@ -114,13 +166,29 @@ exports.updateCategory = async (req, res) => {
       if (!conflict || conflict.id === id) slug = s; // حدّثه لو لا يوجد تعارض
     }
 
-    const updated = await prisma.category.update({
-      where: { id },
-      data: {
+    const data = {
         name: name ?? existing.name,
         slug: slug ?? existing.slug,
-        isActive: typeof isActive === "boolean" ? isActive : existing.isActive,
-      },
+        isActive:
+          typeof isActive === "boolean"
+            ? isActive
+            : typeof isActive === "string"
+            ? String(isActive).toLowerCase() === "true"
+            : existing.isActive,
+        parentId:
+          typeof parentId !== "undefined" && parentId !== null && parentId !== ""
+            ? parseInt(parentId)
+            : existing.parentId,
+      };
+      if (req.file) {
+        data.image = `/uploads/${req.file.filename}`;
+      } else if (typeof req.body.image === "string") {
+        data.image = req.body.image.trim() || null;
+      }
+      const updated = await prisma.category.update({
+      where: { id },
+      data,
+      include: { parent: true, children: true },
     });
 
     return sendSuccess(res, { category: updated }, 200);
@@ -140,11 +208,21 @@ exports.deleteCategory = async (req, res) => {
       include: {
         products: { take: 1 }, // نتحقق من وجود منتجات
         ProductCategory: { take: 1 }, // والعلاقات المتعددة
+        _count: { select: { children: true } },
       },
     });
 
     if (!existing) {
       return sendFail(res, { message: "التصنيف غير موجود" }, 404);
+    }
+
+    // 🔥 منع الحذف إذا كان هناك تصنيفات فرعية
+    if (existing._count.children > 0) {
+      return sendFail(
+        res,
+        { message: "لا يمكن حذف التصنيف لأنه يحتوي على تصنيفات فرعية." },
+        400
+      );
     }
 
     // 🔥 منع الحذف إذا كان هناك منتجات مرتبطة

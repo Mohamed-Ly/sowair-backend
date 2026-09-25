@@ -1,5 +1,5 @@
 const router = require("express").Router();
-const verifyToken = require("../middlewares/verifyToken");
+const { optionalAuth } = require("../middlewares/verifyToken");
 const { handleValidation } = require("../middlewares/handleValidation");
 const {
   wishlistItemValidation,
@@ -15,19 +15,18 @@ const {
   moveToCart,
 } = require("../controllers/wishlist.controller");
 
-// كل مسارات المفضلة تتطلب مستخدم مسجّل
-// router.use(verifyToken);
+// مسارات المفضلة تسمح للمستخدم المسجّل أو الزائر (عبر x-guest-id)
 
 // عرض المفضلة
-router.get("/", verifyToken, getWishlist);
+router.get("/", optionalAuth, getWishlist);
 
 // عداد العناصر
-router.get("/count", verifyToken, getWishlistCount);
+router.get("/count", optionalAuth, getWishlistCount);
 
 // إضافة منتج
 router.post(
   "/items",
-  verifyToken,
+  optionalAuth,
   wishlistItemValidation,
   handleValidation,
   addItem
@@ -36,7 +35,7 @@ router.post(
 // إزالة منتج
 router.delete(
   "/items/:id",
-  verifyToken,
+  optionalAuth,
   wishlistItemIdParamValidation,
   handleValidation,
   removeItem
@@ -45,13 +44,13 @@ router.delete(
 // نقل منتج للسلة
 router.post(
   "/items/:id/move-to-cart",
-  verifyToken,
+  optionalAuth,
   wishlistItemIdParamValidation,
   handleValidation,
   moveToCart
 );
 
 // إفراغ المفضلة
-router.delete("/clear", verifyToken, clearWishlist);
+router.delete("/clear", optionalAuth, clearWishlist);
 
 module.exports = router;

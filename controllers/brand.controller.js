@@ -16,7 +16,22 @@ exports.createBrand = async (req, res) => {
     if (bySlug) return sendFail(res, { message: "السلاق مستخدم بالفعل" }, 400);
 
     const brand = await prisma.brand.create({
-      data: { name, slug, country: country || null, isActive: isActive ?? true }
+      data: {
+        name,
+        slug,
+        image: req.file
+          ? `/uploads/${req.file.filename}`
+          : req.body.image && req.body.image.trim()
+          ? req.body.image.trim()
+          : null,
+        country: country || null,
+        isActive:
+          isActive === undefined || isActive === null
+            ? true
+            : typeof isActive === "boolean"
+            ? isActive
+            : String(isActive).toLowerCase() === "true",
+      },
     });
 
     return sendSuccess(res, { brand }, 201);
@@ -106,14 +121,26 @@ exports.updateBrand = async (req, res) => {
       if (!bySlug || bySlug.id === id) slug = s;
     }
 
-    const updated = await prisma.brand.update({
-      where: { id },
-      data: {
+    const data = {
         name: name ?? existing.name,
         slug: slug ?? existing.slug,
-        country: typeof country === "string" ? (country || null) : existing.country,
-        isActive: typeof isActive === "boolean" ? isActive : existing.isActive
+        country:
+          typeof country === "string" ? (country || null) : existing.country,
+        isActive:
+          typeof isActive === "boolean"
+            ? isActive
+            : typeof isActive === "string"
+            ? String(isActive).toLowerCase() === "true"
+            : existing.isActive,
+      };
+      if (req.file) {
+        data.image = `/uploads/${req.file.filename}`;
+      } else if (typeof req.body.image === "string") {
+        data.image = req.body.image.trim() || null;
       }
+      const updated = await prisma.brand.update({
+      where: { id },
+      data,
     });
 
     return sendSuccess(res, { brand: updated }, 200);

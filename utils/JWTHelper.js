@@ -7,7 +7,7 @@ const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET_KEY; // أضِفه �
 
 // مدد الصلاحية (عدّلها كما تريد)
 const ACCESS_EXP = "15m";
-const REFRESH_EXP = "7d";
+const REFRESH_EXP = "30d";
 
 // حمولة خفيفة تكفي للتعرّف على المستخدم
 function generateAccessToken(user) {
