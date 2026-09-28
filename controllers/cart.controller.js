@@ -15,10 +15,20 @@ async function resolveOwner(req) {
 
 async function getOrCreateCart(owner) {
   let cart = await prisma.cart.findUnique({ where: owner });
-  if (!cart) {
-    cart = await prisma.cart.create({ data: owner });
+  if (cart) return cart;
+
+  try {
+    return await prisma.cart.create({ data: owner });
+  } catch (err) {
+    // طلبان متوازيان لنفس الزائر: الاتنين عدّوا على findUnique قبل ما السلة
+    // تتعمل، وواحد فيهم فشل على القيد الفريد (P2002). هنا نرجع نقرا السلة
+    // اللي اتعملت فعلاً بدل ما نرجّع 500 للمستخدم.
+    if (err && err.code === "P2002") {
+      cart = await prisma.cart.findUnique({ where: owner });
+      if (cart) return cart;
+    }
+    throw err;
   }
-  return cart;
 }
 
 async function loadCart(cartId) {

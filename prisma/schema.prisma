@@ -41,9 +41,27 @@ model Brand {
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
   products   Product[]
-  OfferBrand OfferBrand[]
 
   @@index([name])
+}
+
+// ============ الموردون وسعر الشراء ============
+// costCents على الـ Variant (مش على الـ Product) لأن العطر 100مل أرخص من 200ml
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variants ProductVariant[]
+
+  @@index([name])
+  @@index([isActive])
 }
 
 model Category {
@@ -61,7 +79,6 @@ model Category {
 
   products        Product[]
   ProductCategory ProductCategory[]
-  OfferCategory   OfferCategory[]
 
   @@index([name])
   @@index([parentId])
@@ -84,7 +101,6 @@ model Product {
   ProductCategory ProductCategory[]
   ProductVariant  ProductVariant[]
   WishlistItem    WishlistItem[]
-  OfferProduct    OfferProduct[]
 
   @@index([brandId])
   @@index([categoryId])
@@ -114,11 +130,17 @@ model ProductVariant {
   stockQty      Int      @default(0) // المخزون (>= 0)
   sku           String? // كود داخلي (اختياري)
   barcode       String? // باركود (اختياري)
+
+  // سعر الشراء — null معناها لسه ما اتدخلش، وربح المنتجات دي ما يتحسبش في التقارير
+  costCents     Int?
+  supplierId    Int?
+
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   product   Product     @relation(fields: [productId], references: [id])
+  supplier  Supplier?   @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   CartItem  CartItem[]
   OrderItem OrderItem[]
 
@@ -168,7 +190,9 @@ enum OrderStatus {
   PENDING // قيد المراجعة
   CONFIRMED // مؤكد
   SHIPPING // قيد الشحن
-  DELIVERED // تم التسليم
+  // تسليم جزئي: بعض البنود سُلّمت وبعضها رجع. لا يمكن اعتباره DELIVERED.
+  PARTIALLY_DELIVERED // تم التسليم جزئياً
+  DELIVERED // تم التسليم بالكامل
   CANCELLED // ملغي
 }
 
@@ -176,7 +200,11 @@ model Order {
   id         Int         @id @default(autoincrement())
   userId     Int
   status     OrderStatus @default(PENDING)
-  totalCents Int // الإجمالي بالسنت
+  // الإجمالي النهائي اللي العميل دفعه فعلاً (بعد الخصم)
+  totalCents Int
+  // الإجمالي قبل الخصم + الخصم المطبّق (للتقارير و.calculate الربح)
+  subtotalCents Int @default(0)
+  discountCents Int @default(0)
   currency   String      @default("LYD")
 
   // معلومات الشحن (مدمجة مع الطلب كما طلبت)
@@ -184,8 +212,41 @@ model Order {
   shippingPhone   String
   shippingAddress String // العنوان كامل كما هو
 
+  // المدينة والمنطقة من قوائم ثابتة (عشان نعرف نوجّه المندوب الصح).
+  // بنحفظ الـ ID والاسم مع بعض: الـ ID للربط والتقارير، والاسم snapshot
+  // عشان يفضل صحيح حتى لو الأدمن غيّر اسم المنطقة أو حذفها بعد ما تتعمل طلبات.
+  deliveryCityId   Int?
+  deliveryAreaId   Int?
+  deliveryCityName String?
+  deliveryAreaName String?
+
   cancelDeadline  DateTime? // آخر للإلغاء (24 ساعة) هاذا الوقت خاص بالمستخدم
   cancelledByUser Boolean   @default(false) // هل ألغاه المستخدم؟
+
+  // ===== التسليم الجزئي (Phase 4) =====
+  // المبالغ الثابتة بالقرش. collectedCents هو authoritative دايماً: الباج اند
+  // يحسبه من البنود المسلّمة وما نثقش في رقم المندوب.
+  collectedCents Int @default(0) // المبلغ اللي قبضه المندوب فعلياً (COD)
+  returnReason   String? // سبب رجوع البنود (اختياري لو كلهم اتسلّموا)
+  partiallyDeliveredAt DateTime? // وقت إنهاء التسليم الجزئي
+
+  // ===== المخزون والـ stockDeducted =====
+  // الخصم يتم عند CONFIRMED فقط (مش عند إنشاء الطلب). الحقل ده جواب سؤال
+  // واحد: «هل اتخصم مخزون فعلي بسبب هذا الطلب ولا لا؟» — فعل تاريخي،
+  // مش رصيد محجوز حالياً.
+  //
+  //   PENDING             -> false  (لسه ما اتخصمش)
+  //   CONFIRMED           -> true   (اتخصم، والبضاعة لسه عندنا)
+  //   SHIPPING            -> true   (اتخصم، والبضاعة في الطريق)
+  //   DELIVERED           -> true   (اتخصم، والبضاعة وصلات للعميل)
+  //   PARTIALLY_DELIVERED -> true   (اتخصم، جزء وصل والجزء الراجع رجع للمخزون)
+  //   CANCELLED           -> false  (رجّعنا المخزون قبل ما نقفلو)
+  //
+  // ملاحظة مهمة: بعد التسليم الجزئي بيفضل true مع إن مفيش مخزون محجوز.
+  // وده مقصود — الإلغاء ممنوع في الحالتين النهائيتين، فمفيش أي مسار
+  // بيرجّع المخزون تاني (لو رجعنا «qty - returnedQty» كمان فمش هيتنفذ).
+  // القيمة بتُقرأ كـ «إلغاء لازم يبدّلها false قبل ما يرجّع المخزون».
+  stockDeducted Boolean @default(false)
 
   // التتبع
   orderNumber     String    @unique // رقم طلب مميز
@@ -199,10 +260,54 @@ model Order {
   items OrderItem[]
   statusLogs OrderStatusLog[]
   DeliveryAssignment DeliveryAssignment?
+  deliveryCity City? @relation("OrderDeliveryCity", fields: [deliveryCityId], references: [id], onDelete: SetNull)
+  deliveryArea Area? @relation("OrderDeliveryArea", fields: [deliveryAreaId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+  @@index([deliveryCityId])
+  @@index([deliveryAreaId])
+}
+
+// ============ المدن والمناطق ============
+// قوائم ثابتة يتحكم فيها الأدمن. العميل يختار منهم، والمندوب يوصّل حسب المنطقة.
+model City {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  // كود ثابت مفيد للـ API وللربط مع خدمات أخرى لاحقاً (مثل خرائط جوجل)
+  code      String?  @unique
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  // رسوم التوصيل الافتراضية للمدينة (بالقرش). المنطقة تقدر تعمل لها override.
+  deliveryFeeCents Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  areas  Area[]
+  orders Order[] @relation("OrderDeliveryCity")
+
+  @@index([isActive])
+}
+
+model Area {
+  id        Int      @id @default(autoincrement())
+  name      String
+  cityId    Int
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  // رسوم التوصيل للمنطقة (بالقرش). null = نفس رسوم المدينة الافتراضية.
+  deliveryFeeCents Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  city   City    @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  orders Order[] @relation("OrderDeliveryArea")
+
+  // ما ينفعش يكون في منطقتين بنفس الاسم داخل نفس المدينة
+  @@unique([cityId, name])
+  @@index([cityId])
+  @@index([isActive])
 }
 
 // سجل حركة حالة الطلب (للتقارير والتتبع)
@@ -245,8 +350,26 @@ model OrderItem {
   id             Int @id @default(autoincrement())
   orderId        Int
   variantId      Int
-  unitPriceCents Int // السعر وقت الطلب
+  unitPriceCents Int // السعر للوحدة قبل الخصم
   qty            Int // الكمية
+
+  // ===== التسليم الجزئي (Phase 4) =====
+  // القاعدة الذهبية: deliveredQty + returnedQty <= qty دايماً.
+  // default 0 يعني البند لسه ما اتسلّمش ولا رجع (لأن الطلب لسه PENDING/CONFIRMED).
+  // بنحدّثهم مرة واحدة بس عند التسليم، فمافيش risk of double-return للمخزون.
+  deliveredQty Int @default(0) // الكمية اللي اتسلّمت للعميل
+  returnedQty  Int @default(0) // الكمية اللي رجعت للمخزون (رفض/نفدت)
+
+  // صافي قيمة البند. discountCents بيفضل 0 دايماً: العروض دلوقتي
+  // بانرات للعرض فقط وما بتخصمش حاجة. الحقل موجود عشان حسابات
+  // صافي الربح والتسليم تكتب على نفس الحقل.
+  discountCents  Int @default(0)
+  lineTotalCents Int @default(0) // = unitPriceCents * qty
+
+  // نسخة ثابتة من سعر الشراء لحظة إنشاء الطلب.
+  // لازم تكون نسخة مشمرجع، لأن تعديل سعر الشراء بكرة ما يجبش يغيّر أرباح الشهور السابقة.
+  // null = سعر الشراء ما كانش متدخل وقتها => ربح هذا البند غير معروف
+  unitCostCents Int?
 
   // العلاقات
   order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -284,7 +407,8 @@ enum NotificationType {
   ORDER_CREATED // تم إنشاء طلب جديد
   ORDER_CONFIRMED // تم تأكيد الطلب
   ORDER_SHIPPED // تم شحن الطلب
-  ORDER_DELIVERED // تم التسليم
+  ORDER_DELIVERED // تم التسليم بالكامل
+  ORDER_PARTIALLY_DELIVERED // تم التسليم جزئياً (بعض البنود رجعت)
   ORDER_CANCELLED // تم إلغاء الطلب
   LOW_STOCK // مخزون منخفض
   PROMOTIONAL // إشعار ترويجي
@@ -328,34 +452,13 @@ model DeviceToken {
   @@index([userId])
 }
 
-enum OfferType {
-  DISCOUNT_PERCENTAGE // خصم بنسبة مئوية
-  DISCOUNT_AMOUNT // خصم مبلغ ثابت
-  BUY_ONE_GET_ONE // اشتري واحد واحصل على الآخر
-  FREE_SHIPPING // شحن مجاني
-  SPECIAL_OFFER // عرض خاص
-}
-
-enum OfferTarget {
-  ALL_PRODUCTS // جميع المنتجات
-  SPECIFIC_PRODUCTS // منتجات محددة
-  SPECIFIC_CATEGORIES // تصنيفات محددة
-  SPECIFIC_BRANDS // ماركات محددة
-}
-
+// العرض = بانر للعرض فقط (صورة + عنوان + وصف + تواريخ).
+// لا يوجد خصم على المنتجات: البانر إعلاني، ما بيأثرش على أي سعر.
 model Offer {
-  id          Int         @id @default(autoincrement())
+  id          Int     @id @default(autoincrement())
   title       String
   description String?
   image       String? // صورة العرض للسلايدر
-  offerType   OfferType
-  target      OfferTarget @default(ALL_PRODUCTS)
-
-  // تفاصيل الخصم
-  discountPercentage Int? // نسبة الخصم (مثال: 20 لـ 20%)
-  discountAmount     Int? // مبلغ الخصم (بالسنت)
-  minPurchaseAmount  Int? // حد أدنى للشراء
-  maxDiscountAmount  Int? // حد أقصى للخصم
 
   // التواريخ
   startDate DateTime
@@ -368,53 +471,9 @@ model Offer {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  // العلاقات للعروض المحددة
-  offerProducts   OfferProduct[]
-  offerCategories OfferCategory[]
-  offerBrands     OfferBrand[]
-
   @@index([isActive])
   @@index([startDate, endDate])
   @@index([displayOrder])
-}
-
-// العروض للمنتجات المحددة
-model OfferProduct {
-  id        Int @id @default(autoincrement())
-  offerId   Int
-  productId Int
-
-  offer   Offer   @relation(fields: [offerId], references: [id])
-  product Product @relation(fields: [productId], references: [id])
-
-  @@unique([offerId, productId])
-  @@index([productId])
-}
-
-// العروض للتصنيفات المحددة
-model OfferCategory {
-  id         Int @id @default(autoincrement())
-  offerId    Int
-  categoryId Int
-
-  offer    Offer    @relation(fields: [offerId], references: [id])
-  category Category @relation(fields: [categoryId], references: [id])
-
-  @@unique([offerId, categoryId])
-  @@index([categoryId])
-}
-
-// العروض للماركات المحددة
-model OfferBrand {
-  id      Int @id @default(autoincrement())
-  offerId Int
-  brandId Int
-
-  offer Offer @relation(fields: [offerId], references: [id])
-  brand Brand @relation(fields: [brandId], references: [id])
-
-  @@unique([offerId, brandId])
-  @@index([brandId])
 }
 
 model RefreshToken {

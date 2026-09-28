@@ -2,6 +2,38 @@ const prisma = require("../config/prisma");
 const { sendSuccess, sendFail, sendError } = require("../utils/responseHelper");
 const { buildOrderStatusMessage } = require("../services/order-notification.templates");
 const { sendUserNotification } = require("../services/notification.service");
+const { canTransition } = require("../services/order-status.service");
+
+// البنود المكسورة جزئياً لازم تظهر في كل رد يعرض طلب
+const SETTLED_INCLUDE = {
+  items: {
+    include: {
+      variant: {
+        include: {
+          product: {
+            include: {
+              brand: true,
+              images: { where: { isPrimary: true }, take: 1 },
+            },
+          },
+        },
+      },
+    },
+  },
+  deliveryCity: { select: { id: true, name: true, code: true } },
+  deliveryArea: { select: { id: true, name: true } },
+};
+
+// بنرميه جوّه الـ transaction باش يعمل ROLLBACK كامل.
+// ⚠ مهم: لو رجعنا `{ error }` عادي من الـ transaction، Prisma بيعمل COMMIT
+// — يعني الكتابات اللي اتعملت قبل التحقق بتفضل محفوظة (تسريب مخزون).
+// الرمي هو الوحيد اللي يضمن التراجع.
+function settleError(status, message) {
+  const e = new Error(message);
+  e.settleStatus = status;
+  e.isSettleError = true;
+  return e;
+}
 
 const ORDER_INCLUDE = {
   items: {
@@ -260,7 +292,12 @@ exports.acceptAssignment = async (req, res) => {
   }
 };
 
-// PATCH /api/delivery/delivered/:assignmentId - إتمام التسليم
+// PATCH /api/delivery/delivered/:assignmentId - إتمام التسليم (كامل)
+//
+// Phase 4: ما بقاش فيه منطق خاص — غلاف فوق settleDelivery. قبل Phase 4
+// كان كيعمل status=DELIVERED وما كانش بيسجل deliveredQty/collectedCents
+// إطلاقاً، فكانت البيانات بتتقاسق مع الحالة (طلب DELIVERED وبنوده 0).
+// دلوقتي مسار واحد بس عشان ما يحصلش اختلاف بين.endpoint والتاني.
 exports.completeDelivery = async (req, res) => {
   try {
     const userId = req.user.sub;
@@ -268,6 +305,7 @@ exports.completeDelivery = async (req, res) => {
 
     const assignment = await prisma.deliveryAssignment.findFirst({
       where: { id: assignmentId, deliveryId: userId },
+      include: { order: { select: { items: { select: { id: true, qty: true } } } } },
     });
 
     if (!assignment) {
@@ -280,65 +318,261 @@ exports.completeDelivery = async (req, res) => {
       return sendFail(res, { message: "هذه المهمة ملغاة" }, 400);
     }
 
-    const order = await prisma.order.findUnique({
-      where: { id: assignment.orderId },
-    });
+    // كل بند يتسلّم بالكامل
+    req.body = {
+      items: assignment.order.items.map((i) => ({ orderItemId: i.id, deliveredQty: i.qty })),
+      returnReason: undefined,
+    };
+    req.params.assignmentId = assignmentId;
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const a = await tx.deliveryAssignment.update({
+    return exports.settleDelivery(req, res);
+  } catch (error) {
+    return sendError(res, error.message, 500);
+  }
+};
+
+// ============================================================
+// ================= Phase 4: التسليم الجزئي =================
+// ============================================================
+// POST /api/delivery/settle/:assignmentId
+//
+// المندوب بيبعت لكل بند الكمية اللي سلّمها بس. الكمية الراجعة بنحسبها
+// الباج اند (qty - deliveredQty) مش بنثق في رقم المرسل — عشان كده مستحيل
+// يبعت 0 ويخفي كمية ويسيب المخزون ناقص.
+//
+// القواعد:
+//  - لازم يكون فيه بند واحد على الأقل اتسلّم (تسليم 100% راجع = rejected)
+//  - كل بند في الطلب لازم يتقرّر فيه (عشان نعرف رجع كام بالظبط)
+//  - المبلغ المقبوض = مجموع أرقام البنود المسلّمة (بعد الخصم) — الباج اند
+//    هو المرجع دائماً، والرقم اللي بعتّه المندوب بنقارنه ونرجّعله الحق
+//  - idempotent: بعد التسليم ما ينفعش يتسجل تاني (منع تحصيل مزدوج)
+exports.settleDelivery = async (req, res) => {
+  const userId = req.user.sub;
+  const assignmentId = parseInt(req.params.assignmentId);
+  const { items, collectedCents, returnReason } = req.body;
+
+  let order = null;
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const assignment = await tx.deliveryAssignment.findFirst({
+        where: { id: assignmentId, deliveryId: userId },
+        include: { order: { include: { items: true } } },
+      });
+
+      if (!assignment) {
+        throw settleError(404, "المهمة غير موجودة");
+      }
+      if (assignment.status === "DELIVERED") {
+        throw settleError(400, "تم تسليم هذا الطلب من قبل");
+      }
+      if (assignment.status === "CANCELLED") {
+        throw settleError(400, "هذه المهمة ملغاة");
+      }
+      // المهمة لازم تكون لسه مفتوحة (مقبولة أو لسه ما اتقبلتش).
+      if (!["ASSIGNED", "ACCEPTED"].includes(assignment.status)) {
+        throw settleError(400, `المهمة في حالة «${assignment.status}» — ما يمكنش تسجّل تسليم`);
+      }
+
+      const ord = assignment.order;
+
+      // `stockDeducted` هنا = "المخزون اتخصم فعلاً للطلب ده" (فعل تاريخي).
+      // بعد التسليم الجزئي بيفضل true لأن الخصم حصل والطلب قفل — مش معناها
+      // إن فيه مخزون لسه محجوز. الإلغاء مستحيل بعد التسليم، فمفيش مسار
+      // يرجّع المخزون تاني ويقفل الحقل.
+      if (!ord.stockDeducted) {
+        throw settleError(400, "الطلب لسه ما اتأكدش — ما يمكنش نسجّل تسليم جزئي");
+      }
+      // ⚠ القاعدة الواحدة: التسليم بيتسجل من حالة SHIPPING بس.
+      // DELIVERED و PARTIALLY_DELIVERED نهائيتين — لو وصلنا هنا يبقى
+      // في بيانات متضاربة (assignment مفتوح + طلب مقفول) ونرفض عشان
+      // ما يتحصّلش المبلغ مرتين.
+      if (ord.status !== "SHIPPING") {
+        throw settleError(
+          400,
+          `ما يمكنش نسجّل تسليم في حالة «${ord.status}» — التسليم بيتسجل من حالة «قيد الشحن» بس`
+        );
+      }
+
+      // خريطة البنود: orderItemId -> الكمية المسلّمة
+      const sent = new Map();
+      for (const it of items) {
+        const id = parseInt(it.orderItemId);
+        if (sent.has(id)) {
+          throw settleError(400, "بند مكرر في الطلب — كل بند يتقرّر مرة واحدة");
+        }
+        sent.set(id, parseInt(it.deliveredQty));
+      }
+
+      // كل بند في الطلب لازم يبقى في القائمة
+      for (const item of ord.items) {
+        if (!sent.has(item.id)) {
+          throw settleError(
+            400,
+            `بند من الطلب (${item.qty} قطعة) ما اتقرّرش — لازم تبعت كل البنود`
+          );
+        }
+      }
+
+      // ⚠ ومقلوش بند من طلب تاني: أي معرّف زيادة عن بنود الطلب ده
+      // لازم يترفض، مش يتجاهل بصمت.
+      const ownIds = new Set(ord.items.map((i) => i.id));
+      for (const id of sent.keys()) {
+        if (!ownIds.has(id)) {
+          throw settleError(400, `البند ${id} مش من هذا الطلب`);
+        }
+      }
+
+      // ===== كل التحققات خلصت. دلوقتي بnjrf أي كتابة =====
+      let anyDelivered = false;
+      let expectedCents = 0;
+
+      for (const item of ord.items) {
+        const deliveredQty = sent.get(item.id);
+
+        // safety net: منع الكميات المستحيلة
+        if (deliveredQty < 0 || deliveredQty > item.qty) {
+          throw settleError(
+            400,
+            `الكمية المسلّمة للبند ${item.id} غير منطقية (المطلوب ${item.qty})`
+          );
+        }
+
+        if (deliveredQty > 0) anyDelivered = true;
+
+        // نصيب البند من قيمة السطر بعد الخصم. نحسب النسبة بدل القسمة
+        // على qty عشان ما نخسرش قرش واحد في التقريب.
+        expectedCents += Math.round((item.lineTotalCents * deliveredQty) / item.qty);
+      }
+
+      // 100% راجع = مافيش تسليم. ده مش "جزئي"، ومحتاج مسار تاني.
+      if (!anyDelivered) {
+        throw settleError(
+          400,
+          "كل البضاعة رجعت — مافيش حاجة اتسلّمت. لو العميل رفض الطلب كامل، استخدم الإلغاء من صفحة الطلبات."
+        );
+      }
+
+      const allDelivered = ord.items.every((i) => sent.get(i.id) === i.qty);
+      const newStatus = allDelivered ? "DELIVERED" : "PARTIALLY_DELIVERED";
+
+      // guard أخير قبل الكتابة
+      const transition = canTransition(ord.status, newStatus);
+      if (!transition.ok) {
+        throw settleError(400, transition.reason);
+      }
+
+      // ===== الكتابة =====
+      // ⚠ لازم await. قبل كنا كنحطّو الـ promises في مصفوفة من غير ما
+      // نانتظروهم، فالتحديثات كانت بتنفذ بعد ما الـ transaction يخلص
+      // (أو ما كانتش بتنفذ خالص) = deliveredQty بيفضل 0.
+      for (const item of ord.items) {
+        const deliveredQty = sent.get(item.id);
+        const returnedQty = item.qty - deliveredQty;
+
+        // المخزون يرجع للبنود الراجعة (مرة واحدة فقط — التحديث هنا نهائي)
+        if (returnedQty > 0) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stockQty: { increment: returnedQty } },
+          });
+        }
+
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: { deliveredQty, returnedQty },
+        });
+      }
+
+      const updatedAssignment = await tx.deliveryAssignment.update({
         where: { id: assignmentId },
-        data: { status: "DELIVERED", deliveredAt: new Date() },
-      });
-
-      const updatedOrder = await tx.order.update({
-        where: { id: assignment.orderId },
-        data: { status: "DELIVERED" },
-        include: ORDER_INCLUDE,
-      });
-
-      await tx.orderStatusLog.create({
         data: {
-          orderId: assignment.orderId,
           status: "DELIVERED",
-          actorType: "DELIVERY",
-          actorId: userId,
-          note: "تم تسليم الطلب بنجاح",
+          deliveredAt: new Date(),
+          note: allDelivered
+            ? assignment.note
+            : `تسليم جزئي — ${returnReason || "بدون سبب محدد"}`.slice(0, 200),
         },
       });
 
-      return { a, updatedOrder };
+      const updatedOrder = await tx.order.update({
+        where: { id: ord.id },
+        data: {
+          status: newStatus,
+          // authoritative: الرقم اللي حسبناه إحنا مش اللي بعتّه المندوب
+          collectedCents: expectedCents,
+          returnReason: allDelivered ? null : returnReason || null,
+          partiallyDeliveredAt: allDelivered ? ord.partiallyDeliveredAt : new Date(),
+        },
+        include: SETTLED_INCLUDE,
+      });
+
+      const totalReturned = ord.items.reduce(
+        (sum, i) => sum + (i.qty - sent.get(i.id)),
+        0
+      );
+
+      await tx.orderStatusLog.create({
+        data: {
+          orderId: ord.id,
+          status: newStatus,
+          actorType: "DELIVERY",
+          actorId: userId,
+          note: allDelivered
+            ? "تم تسليم الطلب بالكامل"
+            : `تسليم جزئي: رجع ${totalReturned} قطعة${returnReason ? ` — ${returnReason}` : ""}`,
+        },
+      });
+
+      return { ok: true, assignment: updatedAssignment, order: updatedOrder, expectedCents, allDelivered, totalReturned };
     });
 
-    // إشعار العميل بالتسليم
+    order = result.order;
+
+    // إشعار العميل
     try {
       const { title, body } = buildOrderStatusMessage({
-        status: "DELIVERED",
+        status: order.status,
         orderNumber: order.orderNumber,
       });
       await sendUserNotification({
         userId: order.userId,
-        type: "ORDER_DELIVERED",
+        type: order.status === "DELIVERED" ? "ORDER_DELIVERED" : "ORDER_PARTIALLY_DELIVERED",
         title,
         body,
-        data: {
-          orderId: String(order.id),
-          orderNumber: order.orderNumber,
-        },
+        data: { orderId: String(order.id), orderNumber: order.orderNumber },
       });
     } catch (e) {
-      console.error("Failed to send delivered notification:", e.message);
+      console.error("Failed to send settle notification:", e.message);
     }
+
+    // لو المندوب بعت مبلغ غلط، نرجعله الرقم الصح بوضوح
+    const mismatch =
+      collectedCents !== undefined && parseInt(collectedCents) !== result.expectedCents;
 
     return sendSuccess(
       res,
       {
-        assignment: updated.a,
-        order: updated.updatedOrder,
-        message: "تم تأكيد تسليم الطلب بنجاح",
+        assignment: result.assignment,
+        order,
+        collectedCents: result.expectedCents,
+        returnedTotal: result.totalReturned,
+        ...(mismatch
+          ? {
+              warning: `المبلغ المتوقع ${result.expectedCents} قرش (مش ${collectedCents}). استعملنا الرقم المحسوب.`,
+            }
+          : {}),
+        message: result.allDelivered
+          ? "تم تسليم الطلب بالكامل"
+          : "تم تسجيل التسليم الجزئي بنجاح",
       },
       200
     );
   } catch (error) {
+    // خطأ تحقّق متوقّع: رجعناه زي ما هو (بعد rollback)
+    if (error.isSettleError) {
+      return sendFail(res, { message: error.message }, error.settleStatus);
+    }
     return sendError(res, error.message, 500);
   }
 };

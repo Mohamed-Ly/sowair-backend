@@ -20,7 +20,10 @@ function generateAccessToken(user) {
 
 function generateRefreshToken(user) {
   return jwt.sign(
-    { sub: user.id },
+    // jti عشوائي: بدونه، تسجيلان دخول لنفس المستخدم في نفس الثانية بينتجوا
+    // نفس التوكن بالظبط (iat بدقة ثانية) => نفس tokenHash => تعارض على
+    // Unique(RefreshToken.tokenHash) وواجهة الدخول بترجّع 500.
+    { sub: user.id, jti: crypto.randomBytes(16).toString("hex") },
     REFRESH_TOKEN_SECRET,
     { expiresIn: REFRESH_EXP }
   );

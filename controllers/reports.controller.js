@@ -294,6 +294,7 @@ exports.getProductsReport = async (req, res) => {
       select: {
         qty: true,
         unitPriceCents: true,
+        lineTotalCents: true,
         variant: {
           select: {
             option1: true,
@@ -326,7 +327,8 @@ exports.getProductsReport = async (req, res) => {
         revenueCents: 0,
       };
       entry.totalQty += it.qty;
-      entry.revenueCents += it.unitPriceCents * it.qty;
+      // lineTotalCents هي الصافي بعد الخصم؛ ن fallback للطلبات القديمة
+      entry.revenueCents += it.lineTotalCents || it.unitPriceCents * it.qty;
       map.set(key, entry);
     });
 
@@ -347,10 +349,265 @@ exports.getProductsReport = async (req, res) => {
   }
 };
 
-// ========================== 3) حركة حالات الطلبات ==========================
-exports.getOrderStatusReport = async (req, res) => {
+// ========================== 4) تقرير الأرباح (سعر الشراء vs سعر البيع) ==========================
+exports.getProfitReport = async (req, res) => {
   try {
-    const { from, to, granularity = "day" } = req.query;
+    const { from, to, limit = 10, granularity, supplierId } = req.query;
+    const { start, end } = parseRange(from, to);
+    const take = Math.max(1, Math.min(parseInt(limit) || 10, 100));
+
+    // نحسب الربح على الطلبات المسلّمة فقط — المبيعات غير المسلّمة مش ربح متحقق
+    const items = await prisma.orderItem.findMany({
+      where: {
+        order: { createdAt: { gte: start, lte: end }, status: "DELIVERED" },
+        ...(supplierId ? { variant: { supplierId: Number(supplierId) } } : {}),
+      },
+      select: {
+        qty: true,
+        unitPriceCents: true,
+        unitCostCents: true,
+        lineTotalCents: true,
+        variant: {
+          select: {
+            option1: true,
+            option2: true,
+            costCents: true,
+            supplier: { select: { id: true, name: true } },
+            product: {
+              select: {
+                id: true,
+                name: true,
+                category: { select: { name: true } },
+                brand: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    let revenueCents = 0;      // صافي المبيعات بعد الخصومات
+    let knownCostCents = 0;   // تكلفة المنتجات التي سعر شرائها معروف
+    let profitCents = 0;       // ربح معروف فقط
+    let unknownCostItems = 0;  // بنود سعر شرائها غير معروف
+    let unknownRevenueCents = 0; // قيمة مبيعات البنود المجهولة التكلفة
+
+    const byProduct = new Map();
+    const bySupplier = new Map();
+
+    for (const it of items) {
+      const p = it.variant.product;
+      const revenue = it.lineTotalCents || it.unitPriceCents * it.qty;
+      // ملاحظة: بنستخدم snapshot من وقت الطلب (unitCostCents)،
+      // مش السعر الحالي — لو غيرنا السعر بكرة ما يغيّرش أرقام الشهور اللي فاتت.
+      const known = it.unitCostCents !== null && typeof it.unitCostCents !== "undefined";
+      const cost = known ? it.unitCostCents * it.qty : 0;
+      const profit = known ? revenue - cost : null;
+
+      revenueCents += revenue;
+      if (known) {
+        knownCostCents += cost;
+        profitCents += profit;
+      } else {
+        unknownCostItems += 1;
+        unknownRevenueCents += revenue;
+      }
+
+      const key = p.id;
+      const e = byProduct.get(key) || {
+        productId: p.id,
+        name: p.name,
+        category: p.category?.name || "-",
+        brand: p.brand?.name || "-",
+        variant: [it.variant.option1, it.variant.option2].filter(Boolean).join(" - "),
+        qty: 0,
+        revenueCents: 0,
+        costCents: 0,
+        profitCents: 0,
+        unknownCostItems: 0,
+      };
+      e.qty += it.qty;
+      e.revenueCents += revenue;
+      if (known) {
+        e.costCents += cost;
+        e.profitCents += profit;
+      } else {
+        e.unknownCostItems += 1;
+      }
+      byProduct.set(key, e);
+
+      const s = it.variant.supplier;
+      const skey = s ? s.id : 0;
+      const se = bySupplier.get(skey) || {
+        supplierId: s ? s.id : null,
+        supplierName: s ? s.name : "بدون مورد",
+        qty: 0,
+        revenueCents: 0,
+        costCents: 0,
+        profitCents: 0,
+        unknownCostItems: 0,
+      };
+      se.qty += it.qty;
+      se.revenueCents += revenue;
+      if (known) {
+        se.costCents += cost;
+        se.profitCents += profit;
+      } else {
+        se.unknownCostItems += 1;
+      }
+      bySupplier.set(skey, se);
+    }
+
+    const decorate = (e) => ({
+      ...e,
+      revenue: `${formatCents(e.revenueCents)} ${CURRENCY}`,
+      cost: `${formatCents(e.costCents)} ${CURRENCY}`,
+      profit: `${formatCents(e.profitCents)} ${CURRENCY}`,
+      marginPercent: e.revenueCents > 0
+        ? Number(((e.profitCents / e.revenueCents) * 100).toFixed(2))
+        : 0,
+    });
+
+    const products = Array.from(byProduct.values())
+      .sort((a, b) => b.profitCents - a.profitCents)
+      .slice(0, take)
+      .map(decorate);
+
+    const suppliers = Array.from(bySupplier.values())
+      .sort((a, b) => b.profitCents - a.profitCents)
+      .map(decorate);
+
+    return sendSuccess(
+      res,
+      {
+        report: {
+          period: { from: start.toISOString(), to: end.toISOString() },
+          basis: "DELIVERED", // الربح محسوب على المسلّم فقط
+          totals: {
+            revenueCents,
+            revenue: `${formatCents(revenueCents)} ${CURRENCY}`,
+            costCents: knownCostCents,
+            cost: `${formatCents(knownCostCents)} ${CURRENCY}`,
+            profitCents,
+            profit: `${formatCents(profitCents)} ${CURRENCY}`,
+            marginPercent: revenueCents > 0
+              ? Number(((profitCents / revenueCents) * 100).toFixed(2))
+              : 0,
+            // مهم: الربح ده ناقص مش كامل — فيه بنود سعر شرائها لسه ما اتدخلش
+            isPartial: unknownCostItems > 0,
+            unknownCostItems,
+            unknownRevenueCents,
+            unknownRevenue: `${formatCents(unknownRevenueCents)} ${CURRENCY}`,
+            // نسبة المبيعات اللي ربحها غير معروف — أرقام أوضح من Boolean
+            unknownRevenuePercent: revenueCents > 0
+              ? Number(((unknownRevenueCents / revenueCents) * 100).toFixed(2))
+              : 0,
+          },
+          products,
+          suppliers,
+        },
+      },
+      200
+    );
+  } catch (error) {
+    if (error.message === "INVALID_DATE") {
+      return sendFail(res, { message: "صيغة التاريخ غير صحيحة" }, 400);
+    }
+    return sendError(res, error.message, 500);
+  }
+};
+
+// ========================== 5) قيمة المخزون بسعر الشراء ==========================
+exports.getInventoryValueReport = async (req, res) => {
+  try {
+    const variants = await prisma.productVariant.findMany({
+      where: { isActive: true, product: { isActive: true } },
+      select: {
+        id: true,
+        option1: true,
+        option2: true,
+        priceCents: true,
+        costCents: true,
+        stockQty: true,
+        supplier: { select: { id: true, name: true } },
+        product: {
+          select: { id: true, name: true, category: { select: { name: true } } },
+        },
+      },
+    });
+
+    let totalCost = 0;
+    let totalRetail = 0;
+    let unknownCostVariants = 0;
+    let unknownRetail = 0; // قيمة بيع المنتجات اللي سعر شرائها مجهول
+    const rows = [];
+
+    for (const v of variants) {
+      const cost = v.costCents;
+      const costTotal = cost === null ? 0 : cost * v.stockQty;
+      const retailTotal = v.priceCents * v.stockQty;
+      if (cost === null) {
+        unknownCostVariants += 1;
+        unknownRetail += retailTotal;
+      }
+      totalCost += costTotal;
+      totalRetail += retailTotal;
+      rows.push({
+        productId: v.product.id,
+        name: v.product.name,
+        category: v.product.category?.name || "-",
+        variant: [v.option1, v.option2].filter(Boolean).join(" - ") || "-",
+        supplier: v.supplier?.name || "بدون مورد",
+        stockQty: v.stockQty,
+        costCents: cost,
+        costValueCents: costTotal,
+        retailValueCents: retailTotal,
+        potentialProfitCents: cost === null ? null : retailTotal - costTotal,
+      });
+    }
+
+    rows.sort((a, b) => (b.costValueCents || 0) - (a.costValueCents || 0));
+
+    return sendSuccess(
+      res,
+      {
+        report: {
+          totals: {
+            variants: rows.length,
+            costValueCents: totalCost,
+            costValue: `${formatCents(totalCost)} ${CURRENCY}`,
+            retailValueCents: totalRetail,
+            retailValue: `${formatCents(totalRetail)} ${CURRENCY}`,
+            potentialProfitCents: totalRetail - totalCost,
+            potentialProfit: `${formatCents(totalRetail - totalCost)} ${CURRENCY}`,
+            // تحذير مهم: لو isPartial = true يبقى الربح المتوقع ناقص ومش كامل،
+            // لأن فيه منتجات سعر شرائها لسه ما اتدخلش. الأرقام دي مش بتظهر صفر.
+            isPartial: unknownCostVariants > 0,
+            unknownCostVariants,
+            unknownRetailValueCents: unknownRetail,
+            unknownRetailValue: `${formatCents(unknownRetail)} ${CURRENCY}`,
+          },
+          items: rows.map((r) => ({
+            ...r,
+            costValue: `${formatCents(r.costValueCents)} ${CURRENCY}`,
+            retailValue: `${formatCents(r.retailValueCents)} ${CURRENCY}`,
+            potentialProfit:
+              r.potentialProfitCents === null
+                ? null
+                : `${formatCents(r.potentialProfitCents)} ${CURRENCY}`,
+          })),
+        },
+      },
+      200
+    );
+  } catch (error) {
+    return sendError(res, error.message, 500);
+  }
+};
+
+// ========================== 6) حركة حالات الطلبات ==========================
+exports.getOrderStatusReport = async (req, res) => {
+  try {    const { from, to, granularity = "day" } = req.query;
     const g = VALID_GRANULARITIES.includes(granularity) ? granularity : "day";
     const { start, end } = parseRange(from, to);
 
@@ -419,6 +676,7 @@ exports.exportReport = async (req, res) => {
         select: {
           qty: true,
           unitPriceCents: true,
+          lineTotalCents: true,
           variant: {
             select: {
               option1: true,
@@ -446,7 +704,7 @@ exports.exportReport = async (req, res) => {
           rev: 0,
         };
         e.qty += it.qty;
-        e.rev += it.unitPriceCents * it.qty;
+        e.rev += it.lineTotalCents || it.unitPriceCents * it.qty;
         map.set(p.id, e);
       });
       rows = Array.from(map.values())

@@ -1,55 +1,23 @@
 const prisma = require("../config/prisma");
 const { sendSuccess, sendFail, sendError } = require("../utils/responseHelper");
 const fs = require("fs");
+const path = require("path");
+
+// العرض = بانر للعرض فقط: صورة + عنوان + وصف + تواريخ.
+// ما فيش خصم على المنتجات، وما فيش ربط بمنتجات/تصنيفات/ماركات.
+// البانر إعلاني فقط وبيظهر في سلايدر الصفحة الرئيسية.
 
 // ================= دالة مساعدة لتحويل البيانات =================
 const convertOfferData = (data) => {
   const converted = { ...data };
 
-  console.log("🔄 Converting offer data:", data);
-
-  // الحقول الرقمية
-  const numericFields = [
-    "discountPercentage",
-    "discountAmount",
-    "minPurchaseAmount",
-    "maxDiscountAmount",
-    "displayOrder",
-  ];
-
-  numericFields.forEach((field) => {
-    const value = converted[field];
-    if (value === undefined) {
-      // الحقل لم يُرسل: لا تتطرق له (مهم لتحديث جزئي)
-      return;
-    }
-    if (value === null || value === "") {
-      converted[field] = null;
-      console.log(`➖ Set ${field} to null`);
-    } else {
-      converted[field] = parseInt(value);
-      console.log(
-        `🔢 Converted ${field}: ${data[field]} -> ${converted[field]}`
-      );
-    }
-  });
-
-  // تحويل التواريخ
-  if (converted.startDate) {
-    converted.startDate = new Date(converted.startDate);
-    console.log(
-      `📅 Converted startDate: ${data.startDate} -> ${converted.startDate}`
-    );
+  if (converted.displayOrder !== undefined && converted.displayOrder !== null && converted.displayOrder !== "") {
+    converted.displayOrder = parseInt(converted.displayOrder) || 0;
   }
 
-  if (converted.endDate) {
-    converted.endDate = new Date(converted.endDate);
-    console.log(
-      `📅 Converted endDate: ${data.endDate} -> ${converted.endDate}`
-    );
-  }
+  if (converted.startDate) converted.startDate = new Date(converted.startDate);
+  if (converted.endDate) converted.endDate = new Date(converted.endDate);
 
-  console.log("✅ Final converted data:", converted);
   return converted;
 };
 
@@ -66,40 +34,20 @@ exports.getActiveOffers = async (req, res) => {
         startDate: { lte: now },
         endDate: { gte: now },
       },
-      include: {
-        offerProducts: {
-          include: {
-            product: {
-              include: {
-                images: { where: { isPrimary: true }, take: 1 },
-                brand: true,
-              },
-            },
-          },
-        },
-        offerCategories: {
-          include: {
-            category: true,
-          },
-        },
-        offerBrands: {
-          include: {
-            brand: true,
-          },
-        },
-      },
       orderBy: [{ displayOrder: "asc" }, { createdAt: "desc" }],
     });
 
     // زيادة عداد المشاهدات
-    await Promise.all(
-      offers.map((offer) =>
-        prisma.offer.update({
-          where: { id: offer.id },
-          data: { clickCount: { increment: 1 } },
-        })
-      )
-    );
+    if (offers.length > 0) {
+      await Promise.all(
+        offers.map((offer) =>
+          prisma.offer.update({
+            where: { id: offer.id },
+            data: { clickCount: { increment: 1 } },
+          })
+        )
+      );
+    }
 
     return sendSuccess(res, { offers }, 200);
   } catch (error) {
@@ -112,36 +60,7 @@ exports.getOfferById = async (req, res) => {
   try {
     const offerId = parseInt(req.params.id);
 
-    const offer = await prisma.offer.findUnique({
-      where: { id: offerId },
-      include: {
-        offerProducts: {
-          include: {
-            product: {
-              include: {
-                images: { where: { isPrimary: true }, take: 1 },
-                brand: true,
-                ProductVariant: {
-                  where: { isActive: true },
-                  orderBy: { priceCents: "asc" },
-                  take: 1,
-                },
-              },
-            },
-          },
-        },
-        offerCategories: {
-          include: {
-            category: true,
-          },
-        },
-        offerBrands: {
-          include: {
-            brand: true,
-          },
-        },
-      },
-    });
+    const offer = await prisma.offer.findUnique({ where: { id: offerId } });
 
     if (!offer) {
       return sendFail(res, { message: "العرض غير موجود" }, 404);
@@ -164,108 +83,40 @@ exports.getOfferById = async (req, res) => {
 // POST /api/admin/offers - إنشاء عرض جديد
 exports.createOffer = async (req, res) => {
   try {
-    const txn = await prisma.$transaction(async (prisma) => {
-      try {
-      const {
-        title,
-        description,
-        offerType,
-        target,
-        discountPercentage,
-        discountAmount,
-        minPurchaseAmount,
-        maxDiscountAmount,
-        startDate,
-        endDate,
-        displayOrder,
-        productIds,
-        categoryIds,
-        brandIds,
-      } = req.body;
+    const { title, description, startDate, endDate, isActive, displayOrder } = req.body;
 
-      // 🔥 تحويل البيانات هنا في الباك إند
-      const offerData = convertOfferData({
-        title,
-        description,
-        offerType,
-        target,
-        discountPercentage,
-        discountAmount,
-        minPurchaseAmount,
-        maxDiscountAmount,
-        startDate,
-        endDate,
-        displayOrder: displayOrder || 0, // قيمة افتراضية
-      });
+    if (endDate && startDate && new Date(endDate) <= new Date(startDate)) {
+      return sendFail(res, "تاريخ النهاية لازم يكون بعد تاريخ البداية", 400);
+    }
 
-      // الحصول على مسار الصورة إذا تم رفعها
-      const image = req.file ? `/uploads/offers/${req.file.filename}` : null;
-
-      // إنشاء العرض الأساسي
-      const offer = await prisma.offer.create({
-        data: {
-          ...offerData,
-          image,
-        },
-      });
-
-      // إضافة المنتجات المحددة مع التحويل
-      if (productIds && productIds.length > 0) {
-        await prisma.offerProduct.createMany({
-          data: productIds.map((productId) => ({
-            offerId: offer.id,
-            productId: parseInt(productId),
-          })),
-        });
-      }
-
-      // إضافة التصنيفات المحددة مع التحويل
-      if (categoryIds && categoryIds.length > 0) {
-        await prisma.offerCategory.createMany({
-          data: categoryIds.map((categoryId) => ({
-            offerId: offer.id,
-            categoryId: parseInt(categoryId),
-          })),
-        });
-      }
-
-      // إضافة الماركات المحددة مع التحويل
-      if (brandIds && brandIds.length > 0) {
-        await prisma.offerBrand.createMany({
-          data: brandIds.map((brandId) => ({
-            offerId: offer.id,
-            brandId: parseInt(brandId),
-          })),
-        });
-      }
-
-      const fullOffer = await prisma.offer.findUnique({
-        where: { id: offer.id },
-        include: {
-          offerProducts: { include: { product: true } },
-          offerCategories: { include: { category: true } },
-          offerBrands: { include: { brand: true } },
-        },
-      });
-
-      return sendSuccess(
-        res,
-        {
-          offer: fullOffer,
-          message: "تم إنشاء العرض بنجاح",
-        },
-        201
-      );
-      } catch (error) {
-        console.error("❌ Error in createOffer:", error);
-        // إذا فشل الإنشاء، احذف الصورة المرفوعة
-        if (req.file) {
-          fs.unlinkSync(req.file.path);
-        }
-        throw error;
-      }
+    const offerData = convertOfferData({
+      title,
+      description: description || null,
+      startDate,
+      endDate,
+      displayOrder: displayOrder ?? 0,
     });
+
+    const image = req.file ? `/uploads/offers/${req.file.filename}` : null;
+
+    const offer = await prisma.offer.create({
+      data: {
+        ...offerData,
+        image,
+        ...(isActive !== undefined ? { isActive: isActive === true || isActive === "true" } : {}),
+      },
+    });
+
+    return sendSuccess(res, { offer, message: "تم إنشاء العرض بنجاح" }, 201);
   } catch (error) {
+    // إذا فشل الإنشاء، احذف الصورة المرفوعة عشان ما تبقاش معلّقة
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (_) {
+        /* الصورة اتمسحت خلاص أو مش قابلة للحذف - مش مهمة */
+      }
+    }
     return sendError(res, error.message, 500);
   }
 };
@@ -273,118 +124,48 @@ exports.createOffer = async (req, res) => {
 // PUT /api/admin/offers/:id - تحديث عرض
 exports.updateOffer = async (req, res) => {
   try {
-    const txn = await prisma.$transaction(async (prisma) => {
-      try {
-      const offerId = parseInt(req.params.id);
-      const updateData = req.body;
+    const offerId = parseInt(req.params.id);
+    const { title, description, startDate, endDate, isActive, displayOrder } = req.body;
 
-      // التحقق من وجود العرض
-      const existingOffer = await prisma.offer.findUnique({
-        where: { id: offerId },
-      });
+    const existing = await prisma.offer.findUnique({ where: { id: offerId } });
+    if (!existing) {
+      return sendFail(res, { message: "العرض غير موجود" }, 404);
+    }
 
-      if (!existingOffer) {
-        // إذا فشل، احذف الصورة الجديدة المرفوعة
-        if (req.file) {
-          fs.unlinkSync(req.file.path);
-        }
-        return sendFail(res, { message: "العرض غير موجود" }, 404);
-      }
+    // تحقق من التواريخ على السجل بعد الدمج (التحديث جزئي)
+    const nextStart = startDate !== undefined ? new Date(startDate) : existing.startDate;
+    const nextEnd = endDate !== undefined ? new Date(endDate) : existing.endDate;
+    if (nextEnd <= nextStart) {
+      return sendFail(res, "تاريخ النهاية لازم يكون بعد تاريخ البداية", 400);
+    }
 
-      // إذا تم رفع صورة جديدة، أضف مسارها للبيانات
-      if (req.file) {
-        updateData.image = `/uploads/offers/${req.file.filename}`;
+    const offerData = convertOfferData({ title, description, startDate, endDate, displayOrder });
 
-        // حذف الصورة القديمة إذا كانت موجودة
-        if (existingOffer.image) {
-          const oldImagePath = existingOffer.image.replace("/", "");
-          if (fs.existsSync(oldImagePath)) {
-            fs.unlinkSync(oldImagePath);
-          }
-        }
-      }
+    const data = {};
+    if (title !== undefined) data.title = title;
+    if (description !== undefined) data.description = description || null;
+    if (startDate !== undefined) data.startDate = offerData.startDate;
+    if (endDate !== undefined) data.endDate = offerData.endDate;
+    if (displayOrder !== undefined) data.displayOrder = offerData.displayOrder;
+    if (isActive !== undefined) data.isActive = isActive === true || isActive === "true";
 
-      // إعداد بيانات التحديث
-      const { productIds, categoryIds, brandIds, ...offerData } = updateData;
+    // لو فيه صورة جديدة، امسح القديمة عشان ما تتراكمش
+    if (req.file) {
+      if (existing.image) removeOfferImage(existing.image);
+      data.image = `/uploads/offers/${req.file.filename}`;
+    }
 
-      // 🔥 تحويل البيانات هنا في الباك إند
-      const convertedOfferData = convertOfferData(offerData);
+    const offer = await prisma.offer.update({ where: { id: offerId }, data });
 
-      // displayOrder حقل مطلوب في النموذج - منع إرسال null صراحةً له
-      if (convertedOfferData.displayOrder === null) {
-        delete convertedOfferData.displayOrder;
-      }
-
-      // تحديث العرض الأساسي
-      const updatedOffer = await prisma.offer.update({
-        where: { id: offerId },
-        data: convertedOfferData,
-      });
-
-      // تحديث العلاقات إذا تم إرسالها مع التحويل
-      if (productIds) {
-        await prisma.offerProduct.deleteMany({ where: { offerId } });
-        if (productIds.length > 0) {
-          await prisma.offerProduct.createMany({
-            data: productIds.map((productId) => ({
-              offerId,
-              productId: parseInt(productId),
-            })),
-          });
-        }
-      }
-
-      if (categoryIds) {
-        await prisma.offerCategory.deleteMany({ where: { offerId } });
-        if (categoryIds.length > 0) {
-          await prisma.offerCategory.createMany({
-            data: categoryIds.map((categoryId) => ({
-              offerId,
-              categoryId: parseInt(categoryId),
-            })),
-          });
-        }
-      }
-
-      if (brandIds) {
-        await prisma.offerBrand.deleteMany({ where: { offerId } });
-        if (brandIds.length > 0) {
-          await prisma.offerBrand.createMany({
-            data: brandIds.map((brandId) => ({
-              offerId,
-              brandId: parseInt(brandId),
-            })),
-          });
-        }
-      }
-
-      const fullOffer = await prisma.offer.findUnique({
-        where: { id: offerId },
-        include: {
-          offerProducts: { include: { product: true } },
-          offerCategories: { include: { category: true } },
-          offerBrands: { include: { brand: true } },
-        },
-      });
-
-      return sendSuccess(
-        res,
-        {
-          offer: fullOffer,
-          message: "تم تحديث العرض بنجاح",
-        },
-        200
-      );
-    } catch (error) {
-      console.error("❌ Error in updateOffer:", error);
-      // إذا فشل التحديث، احذف الصورة الجديدة المرفوعة
-      if (req.file) {
-        fs.unlinkSync(req.file.path);
-      }
-      throw error;
-      }
-    });
+    return sendSuccess(res, { offer, message: "تم تحديث العرض بنجاح" }, 200);
   } catch (error) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (_) {
+        /* تجاهل */
+      }
+    }
     return sendError(res, error.message, 500);
   }
 };
@@ -395,16 +176,13 @@ exports.getAllOffers = async (req, res) => {
     const { page = 1, limit = 10, isActive, q } = req.query;
 
     const where = {};
-    if (isActive !== undefined) {
+    if (isActive !== undefined && isActive !== "") {
       where.isActive = isActive === "true";
     }
 
     if (q && q.trim()) {
       const keyword = q.trim();
-      where.OR = [
-        { title: { contains: keyword } }, // ⬅️ بدون mode
-        { description: { contains: keyword } }, // ⬅️ بدون mode
-      ];
+      where.OR = [{ title: { contains: keyword } }, { description: { contains: keyword } }];
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -412,18 +190,6 @@ exports.getAllOffers = async (req, res) => {
 
     const offers = await prisma.offer.findMany({
       where,
-      include: {
-        offerProducts: { include: { product: true } },
-        offerCategories: { include: { category: true } },
-        offerBrands: { include: { brand: true } },
-        _count: {
-          select: {
-            offerProducts: true,
-            offerCategories: true,
-            offerBrands: true,
-          },
-        },
-      },
       orderBy: { createdAt: "desc" },
       skip: (pageNum - 1) * limitNum,
       take: limitNum,
@@ -452,48 +218,18 @@ exports.getAllOffers = async (req, res) => {
 // DELETE /api/admin/offers/:id - حذف عرض
 exports.deleteOffer = async (req, res) => {
   try {
-    const txn = await prisma.$transaction(async (prisma) => {
-      try {
-      const offerId = parseInt(req.params.id);
+    const offerId = parseInt(req.params.id);
 
-      // التحقق من وجود العرض
-      const offer = await prisma.offer.findUnique({
-        where: { id: offerId },
-      });
+    const offer = await prisma.offer.findUnique({ where: { id: offerId } });
+    if (!offer) {
+      return sendFail(res, { message: "العرض غير موجود" }, 404);
+    }
 
-      if (!offer) {
-        return sendFail(res, { message: "العرض غير موجود" }, 404);
-      }
+    if (offer.image) removeOfferImage(offer.image);
 
-      // حذف الصورة إذا كانت موجودة
-      if (offer.image) {
-        const imagePath = offer.image.replace("/", "");
-        if (fs.existsSync(imagePath)) {
-          fs.unlinkSync(imagePath);
-        }
-      }
+    await prisma.offer.delete({ where: { id: offerId } });
 
-      // حذف العلاقات أولاً
-      await prisma.offerProduct.deleteMany({ where: { offerId } });
-      await prisma.offerCategory.deleteMany({ where: { offerId } });
-      await prisma.offerBrand.deleteMany({ where: { offerId } });
-
-      // ثم حذف العرض
-      await prisma.offer.delete({
-        where: { id: offerId },
-      });
-
-      return sendSuccess(
-        res,
-        {
-          message: "تم حذف العرض بنجاح",
-        },
-        200
-      );
-    } catch (error) {
-      throw error;
-      }
-    });
+    return sendSuccess(res, { message: "تم حذف العرض بنجاح" }, 200);
   } catch (error) {
     return sendError(res, error.message, 500);
   }
@@ -504,10 +240,7 @@ exports.toggleOffer = async (req, res) => {
   try {
     const offerId = parseInt(req.params.id);
 
-    const offer = await prisma.offer.findUnique({
-      where: { id: offerId },
-    });
-
+    const offer = await prisma.offer.findUnique({ where: { id: offerId } });
     if (!offer) {
       return sendFail(res, { message: "العرض غير موجود" }, 404);
     }
@@ -517,15 +250,20 @@ exports.toggleOffer = async (req, res) => {
       data: { isActive: !offer.isActive },
     });
 
-    return sendSuccess(
-      res,
-      {
-        offer: updatedOffer,
-        message: `تم ${updatedOffer.isActive ? "تفعيل" : "تعطيل"} العرض بنجاح`,
-      },
-      200
-    );
+    return sendSuccess(res, { offer: updatedOffer, message: "تم تحديث حالة العرض" }, 200);
   } catch (error) {
     return sendError(res, error.message, 500);
   }
 };
+
+// حذف ملف صورة العرض من مجلد uploads
+function removeOfferImage(imagePath) {
+  try {
+    // الصورة مخزّنة كـ "/uploads/offers/xxx.png"
+    const relative = imagePath.replace(/^\/+/, "");
+    const full = path.join(__dirname, "..", relative);
+    if (fs.existsSync(full)) fs.unlinkSync(full);
+  } catch (_) {
+    // فشل حذف الصورة ما لازمش يوقف حذف العرض
+  }
+}

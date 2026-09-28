@@ -6,6 +6,17 @@ async function ensureProduct(productId) {
   return prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
 }
 
+// helper للتأكد من وجود المورد — يمنع ربط Variant بمورد محذوف أو خطأ في الـ id
+async function ensureSupplier(supplierId) {
+  if (supplierId === null || typeof supplierId === "undefined" || supplierId === "") {
+    return { ok: true, value: null };
+  }
+  const id = Number(supplierId);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, value: null };
+  const supplier = await prisma.supplier.findUnique({ where: { id }, select: { id: true } });
+  return supplier ? { ok: true, value: id } : { ok: false, value: null };
+}
+
 // إنشاء Variant لمنتج
 exports.createVariant = async (req, res) => {
   try {
@@ -13,7 +24,10 @@ exports.createVariant = async (req, res) => {
     const product = await ensureProduct(productId);
     if (!product) return sendFail(res, { message: "المنتج غير موجود" }, 404);
 
-    const { option1, option2, priceCents, stockQty, sku, barcode, isActive } = req.body;
+    const { option1, option2, priceCents, stockQty, sku, barcode, isActive, costCents, supplierId } = req.body;
+
+    const supplier = await ensureSupplier(supplierId);
+    if (!supplier.ok) return sendFail(res, { message: "المورد غير موجود" }, 400);
 
     // منع تكرار نفس (الخيارين) لنفس المنتج
     if (option1 || option2) {
@@ -32,6 +46,8 @@ exports.createVariant = async (req, res) => {
         stockQty: stockQty ? Number(stockQty) : 0,
         sku: sku || null,
         barcode: barcode || null,
+        costCents: typeof costCents === "undefined" || costCents === null || costCents === "" ? null : Number(costCents),
+        supplierId: supplier.value,
         isActive: typeof isActive === "boolean" ? isActive : (typeof isActive === "string" ? isActive === "true" : true),
       }
     });
@@ -109,7 +125,10 @@ exports.updateVariant = async (req, res) => {
     });
     if (!existing) return sendFail(res, { message: "المتغير غير موجود" }, 404);
 
-    let { option1, option2, priceCents, stockQty, sku, barcode, isActive } = req.body;
+    let { option1, option2, priceCents, stockQty, sku, barcode, isActive, costCents, supplierId } = req.body;
+
+    const supplier = await ensureSupplier(supplierId);
+    if (!supplier.ok) return sendFail(res, { message: "المورد غير موجود" }, 400);
 
     // التحقق من عدم تكرار (option1 + option2) لنفس المنتج عند التعديل
     if (typeof option1 !== "undefined" || typeof option2 !== "undefined") {
@@ -139,6 +158,10 @@ exports.updateVariant = async (req, res) => {
         stockQty: typeof stockQty !== "undefined" ? Number(stockQty) : existing.stockQty,
         sku: typeof sku !== "undefined" ? (sku || null) : existing.sku,
         barcode: typeof barcode !== "undefined" ? (barcode || null) : existing.barcode,
+        // تغيير سعر الشراء لا يمس الأوامر القديمة — هي محفوظة كـ snapshot على OrderItem
+        costCents: typeof costCents === "undefined" ? existing.costCents
+          : (costCents === null || costCents === "" ? null : Number(costCents)),
+        supplierId: typeof supplierId === "undefined" ? existing.supplierId : supplier.value,
         isActive: typeof isActive === "boolean"
           ? isActive
           : (typeof isActive === "string" ? (isActive.toLowerCase() === "true" ? true : isActive.toLowerCase() === "false" ? false : existing.isActive) : existing.isActive),

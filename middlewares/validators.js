@@ -1,5 +1,6 @@
 // middlewares/validation.js
 const { body, param, query } = require("express-validator");
+const prisma = require("../config/prisma");
 
 // يسمح بأرقام تبدأ بـ + أو رقم، مع فراغات وشرطات
 const phoneRegex = /^[+\d][\d\s-]{5,}$/;
@@ -274,6 +275,16 @@ exports.createVariantValidation = [
     .isLength({ min: 1, max: 120 })
     .withMessage("الباركود غير صالح"),
   body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  // سعر الشراء — null مسموح (لسه ما اتدخلش) عشان نعرف إن الربح غير معروف
+  body("costCents")
+    .optional({ nullable: true, checkFalsy: true })
+    .isInt({ min: 0 })
+    .withMessage("سعر الشراء يجب أن يكون 0 أو أكبر"),
+  body("supplierId")
+    .optional({ nullable: true, checkFalsy: true })
+    .isInt({ min: 1 })
+    .withMessage("المورد غير صالح")
+    .toInt(),
 ];
 
 // تحديث Variant
@@ -303,6 +314,15 @@ exports.updateVariantValidation = [
     .isLength({ min: 1, max: 120 })
     .withMessage("الباركود غير صالح"),
   body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("costCents")
+    .optional({ nullable: true, checkFalsy: true })
+    .isInt({ min: 0 })
+    .withMessage("سعر الشراء يجب أن يكون 0 أو أكبر"),
+  body("supplierId")
+    .optional({ nullable: true, checkFalsy: true })
+    .isInt({ min: 1 })
+    .withMessage("المورد غير صالح")
+    .toInt(),
 ];
 
 // ضبط مخزون (زيادة/نقصان)
@@ -377,12 +397,31 @@ exports.createOrderValidation = [
     .withMessage("العنوان يجب أن يكون بين 2 و 500 حرف")
     .notEmpty()
     .withMessage("العنوان مطلوب"),
+  // المدينة/المنطقة اختياريين مؤقتاً (الطلبات القديمة ما عندهاش)،
+  // بس لو بعتهم لازم يكونوا أرقام صحيحة. التحقق من إن المنطقة فعلاً
+  // تابعة للمدينة يعمل في الـ controller لأنه محتاج query.
+  body("deliveryCityId").optional({ nullable: true, checkFalsy: true }).isInt({ gt: 0 }).withMessage("المدينة غير صالحة").toInt(),
+  body("deliveryAreaId").optional({ nullable: true, checkFalsy: true }).isInt({ gt: 0 }).withMessage("المنطقة غير صالحة").toInt(),
 ];
+
+// التحقق إن المنطقة تابعة للمدينة — بيشتغل جوّه transaction
+// (bypass)، ما يمكنش يتحط في express-validator
+exports.validateAreaBelongsToCity = async (deliveryCityId, deliveryAreaId) => {
+  if (!deliveryAreaId) return { ok: true };
+  const area = await prisma.area.findUnique({
+    where: { id: deliveryAreaId },
+    include: { city: { select: { isActive: true } } },
+  });
+  if (!area) return { ok: false, message: "المنطقة المختارة غير موجودة" };
+  if (deliveryCityId && area.cityId !== deliveryCityId) {
+    return { ok: false, message: "المنطقة المختارة لا تتبع المدينة المختارة" };
+  }
+  return { ok: true, area };
+};
 
 exports.orderIdParamValidation = [
   param("id").isInt({ gt: 0 }).withMessage("معرّف الطلب غير صالح"),
 ];
-
 exports.deleteOrderValidation = [
   param("id").isInt({ gt: 0 }).withMessage("معرّف الطلب غير صالح"),
 ];
@@ -404,13 +443,25 @@ exports.updateOrderValidation = [
     .trim()
     .isLength({ min: 10, max: 500 })
     .withMessage("العنوان يجب أن يكون بين 10 و 500 حرف"),
+  // هنا يبقا null مسموح (يعني شيل المنطقة) — لـ .optional().isInt() مش هيمسك null
+  body("deliveryCityId")
+    .optional({ nullable: true })
+    .custom((v) => v === null || /^\d+$/.test(String(v)))
+    .withMessage("المدينة غير صالحة")
+    .toInt(),
+  body("deliveryAreaId")
+    .optional({ nullable: true })
+    .custom((v) => v === null || /^\d+$/.test(String(v)))
+    .withMessage("المنطقة غير صالحة")
+    .toInt(),
 ];
 
 // تحديث الطلب من قبل الأدمن
 exports.updateOrderStatusValidation = [
   param("id").isInt({ gt: 0 }).withMessage("معرّف الطلب غير صالح"),
   body("status")
-    .isIn(["PENDING", "CONFIRMED", "SHIPPING", "DELIVERED", "CANCELLED"])
+    // PARTIALLY_DELIVERED في القائمة باش يوصل للـ controller ويجيب رسالة مفهومة
+    .isIn(["PENDING", "CONFIRMED", "SHIPPING", "PARTIALLY_DELIVERED", "DELIVERED", "CANCELLED"])
     .withMessage("حالة الطلب غير صالحة"),
   body("cancelledReason")
     .optional()
@@ -526,6 +577,20 @@ exports.deviceTokenParamValidation = [
 
 // ======================= Offers =======================
 
+// حقول اختيارية: نقبل null و "" لأن الواجهة ممكن تبعتهم فاضي
+const optionalOffer = () => ({ nullable: true, checkFalsy: true });
+
+// الواجهة بترفع الصورة بـ multipart/form-data، فـ `isActive` بيوصل نص "true"/"false"
+// مش Boolean فعلي، و`isBoolean()` الصارم كان بيرفضها بـ 422. فبنقبل النص ونحوّله.
+const offerActiveChain = (field) =>
+  body(field)
+    .optional(optionalOffer())
+    .isIn(["true", "false", true, false])
+    .withMessage("حالة التفعيل غير صحيحة")
+    .toBoolean();
+
+// العرض = بانر للعرض فقط: عنوان + وصف + صورة + تواريخ.
+// مفيش خصم ولا هدف (منتجات/تصنيفات/ماركات).
 exports.createOfferValidation = [
   body("title")
     .trim()
@@ -538,71 +603,14 @@ exports.createOfferValidation = [
     .trim()
     .isLength({ max: 500 })
     .withMessage("الوصف يجب ألا يتجاوز 500 حرف"),
-  body("offerType")
-    .isIn([
-      "DISCOUNT_PERCENTAGE",
-      "DISCOUNT_AMOUNT",
-      "BUY_ONE_GET_ONE",
-      "FREE_SHIPPING",
-      "SPECIAL_OFFER",
-    ])
-    .withMessage("نوع العرض غير صالح"),
-  body("target")
-    .isIn([
-      "ALL_PRODUCTS",
-      "SPECIFIC_PRODUCTS",
-      "SPECIFIC_CATEGORIES",
-      "SPECIFIC_BRANDS",
-    ])
-    .withMessage("هدف العرض غير صالح"),
-  body("discountPercentage")
-    .optional()
-    .isInt({ min: 1, max: 100 })
-    .withMessage("نسبة الخصم يجب أن تكون بين 1 و 100"),
-  body("discountAmount")
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage("مبلغ الخصم يجب أن يكون رقم موجب"),
-  // body("minPurchaseAmount")
-  //   .optional()
-  //   .isInt({ min: 0 })
-  //   .withMessage("الحد الأدنى للشراء غير صالح"),
-  // body("maxDiscountAmount")
-  //   .optional()
-  //   .isInt({ min: 0 })
-  //   .withMessage("الحد الأقصى للخصم غير صالح"),
   body("startDate").isISO8601().withMessage("تاريخ البداية غير صالح"),
   body("endDate").isISO8601().withMessage("تاريخ النهاية غير صالح"),
-  body("image").optional().isURL().withMessage("رابط الصورة غير صالح"),
+  offerActiveChain("isActive"),
   body("displayOrder")
-    .optional()
+    .optional(optionalOffer())
     .isInt({ min: 0 })
     .withMessage("ترتيب العرض يجب أن يكون رقم موجب"),
-  body("productIds")
-    .optional()
-    .isArray()
-    .withMessage("قائمة المنتجات يجب أن تكون مصفوفة"),
-  body("categoryIds")
-    .optional()
-    .isArray()
-    .withMessage("قائمة التصنيفات يجب أن تكون مصفوفة"),
-  body("brandIds")
-    .optional()
-    .isArray()
-    .withMessage("قائمة الماركات يجب أن تكون مصفوفة"),
-  body().custom((value, { req }) => {
-    // التحقق من أن الخصم مناسب لنوع العرض
-    if (
-      value.offerType === "DISCOUNT_PERCENTAGE" &&
-      !value.discountPercentage
-    ) {
-      throw new Error("نسبة الخصم مطلوبة لعروض النسبة المئوية");
-    }
-    if (value.offerType === "DISCOUNT_AMOUNT" && !value.discountAmount) {
-      throw new Error("مبلغ الخصم مطلوب لعروض المبلغ الثابت");
-    }
-
-    // التحقق من أن التواريخ منطقية
+  body().custom((value) => {
     if (
       value.startDate &&
       value.endDate &&
@@ -610,10 +618,10 @@ exports.createOfferValidation = [
     ) {
       throw new Error("تاريخ البداية يجب أن يكون قبل تاريخ النهاية");
     }
-
     return true;
   }),
 ];
+
 
 exports.updateOfferValidation = [
   param("id").isInt({ gt: 0 }).withMessage("معرّف العرض غير صالح"),
@@ -627,45 +635,24 @@ exports.updateOfferValidation = [
     .trim()
     .isLength({ max: 500 })
     .withMessage("الوصف يجب ألا يتجاوز 500 حرف"),
-  body("offerType")
-    .optional()
-    .isIn([
-      "DISCOUNT_PERCENTAGE",
-      "DISCOUNT_AMOUNT",
-      "BUY_ONE_GET_ONE",
-      "FREE_SHIPPING",
-      "SPECIAL_OFFER",
-    ])
-    .withMessage("نوع العرض غير صالح"),
-  body("discountPercentage")
-    .optional()
-    .isInt({ min: 1, max: 100 })
-    .withMessage("نسبة الخصم يجب أن تكون بين 1 و 100"),
-  body("discountAmount")
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage("مبلغ الخصم يجب أن يكون رقم موجب"),
-  // body("minPurchaseAmount")
-  //   .optional()
-  //   .isInt({ min: 0 })
-  //   .withMessage("الحد الأدنى للشراء غير صالح"),
-  // body("maxDiscountAmount")
-  //   .optional()
-  //   .isInt({ min: 0 })
-  //   .withMessage("الحد الأقصى للخصم غير صالح"),
   body("startDate")
-    .optional()
+    .optional(optionalOffer())
     .isISO8601()
     .withMessage("تاريخ البداية غير صالح"),
-  body("endDate").optional().isISO8601().withMessage("تاريخ النهاية غير صالح"),
-  body("image").optional().isURL().withMessage("رابط الصورة غير صالح"),
+  body("endDate")
+    .optional(optionalOffer())
+    .isISO8601()
+    .withMessage("تاريخ النهاية غير صالح"),
+  offerActiveChain("isActive"),
   body("displayOrder")
-    .optional()
+    .optional(optionalOffer())
     .isInt({ min: 0 })
     .withMessage("ترتيب العرض يجب أن يكون رقم موجب"),
 ];
 
+
 exports.offerIdParamValidation = [
+
   param("id").isInt({ gt: 0 }).withMessage("معرّف العرض غير صالح"),
 ];
 
@@ -752,4 +739,94 @@ exports.assignDeliveryValidation = [
   body("orderId").isInt({ gt: 0 }).withMessage("معرّف الطلب غير صالح"),
   body("deliveryId").isInt({ gt: 0 }).withMessage("معرّف المندوب غير صالح"),
   body("note").optional().trim().isLength({ max: 200 }).withMessage("الملاحظة طويلة جداً"),
+];
+
+// ---------- Phase 4: التسليم الجزئي ----------
+// بنود التسليم: كل بند لازم ياخد orderItemId + الكمية المسلّمة.
+// الكمية الراجعة بنحسبها الباج اند (qty - deliveredQty) — ما نثقش في رقم
+// المندوب للرجوع، عشان ما يقدرش يخفّي كمية ويخلي المخزون ينزل.
+exports.settleDeliveryValidation = [
+  body("items")
+    .isArray({ min: 1 })
+    .withMessage("لازم تبعت بنود التسليم")
+    .bail(),
+  body("items.*.orderItemId")
+    .isInt({ gt: 0 })
+    .withMessage("معرّف بند الطلب غير صالح")
+    .bail(),
+  body("items.*.deliveredQty")
+    .isInt({ min: 0 })
+    .withMessage("الكمية المسلّمة لازم تكون رقم صحيح (0 أو أكثر)")
+    .bail(),
+  // collectedCents اختياري: لو المرسل حطه بنتحقق، ولو ما حطه الباج اند
+  // بيحسبه من البنود المسلّمة (authoritative).
+  body("collectedCents")
+    .optional({ checkFalsy: false })
+    .isInt({ min: 0 })
+    .withMessage("المبلغ المقبوض لازم يكون رقم صحيح (0 أو أكثر)"),
+  body("returnReason")
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage("سبب الرجوع طويل جداً (500 حرف أقصى)"),
+];
+
+// ======================= الموردون =======================
+exports.createSupplierValidation = [
+  body("name").trim().notEmpty().withMessage("اسم المورد مطلوب").isLength({ max: 120 }).withMessage("اسم المورد طويل جداً"),
+  body("phone").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 40 }).withMessage("رقم الهاتف غير صالح"),
+  body("email").optional({ nullable: true, checkFalsy: true }).trim().isEmail().withMessage("البريد الإلكتروني غير صالح"),
+  body("address").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 300 }).withMessage("العنوان غير صالح"),
+  body("notes").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 1000 }).withMessage("الملاحظات غير صالحة"),
+  body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+];
+
+exports.updateSupplierValidation = [
+  body("name").optional().trim().notEmpty().withMessage("اسم المورد مطلوب").isLength({ max: 120 }).withMessage("اسم المورد طويل جداً"),
+  body("phone").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 40 }).withMessage("رقم الهاتف غير صالح"),
+  body("email").optional({ nullable: true, checkFalsy: true }).trim().isEmail().withMessage("البريد الإلكتروني غير صالح"),
+  body("address").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 300 }).withMessage("العنوان غير صالح"),
+  body("notes").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 1000 }).withMessage("الملاحظات غير صالحة"),
+  body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+];
+
+exports.supplierIdParamValidation = [
+  param("id").isInt({ gt: 0 }).withMessage("المعرف غير صالح").toInt(),
+];
+
+// ======================= المدن والمناطق =======================
+exports.createCityValidation = [
+  body("name").trim().notEmpty().withMessage("اسم المدينة مطلوب").isLength({ max: 80 }).withMessage("اسم المدينة طويل جداً"),
+  body("code").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 10 }).withMessage("الكود طويل جداً"),
+  body("deliveryFeeCents").optional().isInt({ min: 0 }).withMessage("رسوم التوصيل غير صالحة").toInt(),
+  body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("sortOrder").optional().isInt().withMessage("ترتيب العرض غير صحيح").toInt(),
+];
+
+exports.updateCityValidation = [
+  body("name").optional().trim().notEmpty().withMessage("اسم المدينة مطلوب").isLength({ max: 80 }).withMessage("اسم المدينة طويل جداً"),
+  body("code").optional({ nullable: true, checkFalsy: true }).trim().isLength({ max: 10 }).withMessage("الكود طويل جداً"),
+  body("deliveryFeeCents").optional().isInt({ min: 0 }).withMessage("رسوم التوصيل غير صالحة").toInt(),
+  body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("sortOrder").optional().isInt().withMessage("ترتيب العرض غير صحيح").toInt(),
+];
+
+exports.createAreaValidation = [
+  body("name").trim().notEmpty().withMessage("اسم المنطقة مطلوب").isLength({ max: 80 }).withMessage("اسم المنطقة طويل جداً"),
+  body("cityId").isInt({ gt: 0 }).withMessage("المدينة غير صالحة").toInt(),
+  body("deliveryFeeCents").optional({ nullable: true, checkFalsy: true }).isInt({ min: 0 }).withMessage("رسوم التوصيل غير صالحة").toInt(),
+  body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("sortOrder").optional().isInt().withMessage("ترتيب العرض غير صحيح").toInt(),
+];
+
+exports.updateAreaValidation = [
+  body("name").optional().trim().notEmpty().withMessage("اسم المنطقة مطلوب").isLength({ max: 80 }).withMessage("اسم المنطقة طويل جداً"),
+  body("cityId").optional().isInt({ gt: 0 }).withMessage("المدينة غير صالحة").toInt(),
+  body("deliveryFeeCents").optional({ nullable: true, checkFalsy: true }).isInt({ min: 0 }).withMessage("رسوم التوصيل غير صالحة").toInt(),
+  body("isActive").optional().isBoolean().withMessage("قيمة التفعيل غير صحيحة"),
+  body("sortOrder").optional().isInt().withMessage("ترتيب العرض غير صحيح").toInt(),
+];
+
+exports.quoteFeeValidation = [
+  body("areaId").isInt({ gt: 0 }).withMessage("المنطقة غير صالحة").toInt(),
 ];

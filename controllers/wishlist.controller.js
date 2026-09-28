@@ -13,17 +13,23 @@ async function resolveOwner(req) {
 }
 
 async function getOrCreateWishlist(owner) {
-  let wishlist = await prisma.wishlist.findUnique({ 
-    where: owner 
+  let wishlist = await prisma.wishlist.findUnique({
+    where: owner
   });
-  
-  if (!wishlist) {
-    wishlist = await prisma.wishlist.create({ 
-      data: owner 
-    });
+
+  if (wishlist) return wishlist;
+
+  try {
+    return await prisma.wishlist.create({ data: owner });
+  } catch (err) {
+    // نفس سباق السلة: طلبان متوازيان لنفس الزائر => واحد فيهم P2002.
+    // نرجع نقرا اللي اتعمل بدل 500.
+    if (err && err.code === "P2002") {
+      wishlist = await prisma.wishlist.findUnique({ where: owner });
+      if (wishlist) return wishlist;
+    }
+    throw err;
   }
-  
-  return wishlist;
 }
 
 async function loadWishlist(wishlistId) {

@@ -112,6 +112,50 @@ async function seedCategories() {
   return prisma.category.findMany();
 }
 
+// ======================= المدن والمناطق =======================
+// رسوم التوصيل بالقرش (1000 قرش = 10 د.ل).
+// ملاحظة: بذرنا مناطق طرابلس فقط،
+// باقي المدن فاضية والباقي يدخله الأدمن من صفحة "المدن والمناطق".
+const CITY_DATA = [
+  {
+    name: "طرابلس",
+    code: "TRI",
+    deliveryFeeCents: 1000,
+    areas: ["أبو سليم", "الشاط", "سوق الجمعة", "جنزور", "تاجوراء", "قرقارش", "الأندلس", "الهضبة", "زاوية الدهماني"],
+  },
+  { name: "بنغازي", code: "BEN", deliveryFeeCents: 1500, areas: [] },
+  { name: "مصراتة", code: "MRA", deliveryFeeCents: 1200, areas: [] },
+  { name: "الزاوية", code: "ZAW", deliveryFeeCents: 1200, areas: [] },
+  { name: "بن عاشور", code: "BNA", deliveryFeeCents: 1000, areas: [] },
+  { name: "الخمس", code: "KHM", deliveryFeeCents: 1000, areas: [] },
+  { name: "سرت", code: "SRT", deliveryFeeCents: 2000, areas: [] },
+  { name: "درنة", code: "DRN", deliveryFeeCents: 2500, areas: [] },
+  { name: "طبرق", code: "TOB", deliveryFeeCents: 2500, areas: [] },
+  { name: "أجدابيا", code: "AJD", deliveryFeeCents: 1800, areas: [] },
+  { name: "سبها", code: "SBA", deliveryFeeCents: 3000, areas: [] },
+  { name: "غريان", code: "GHD", deliveryFeeCents: 3500, areas: [] },
+];
+
+async function seedLocations() {
+  let areaCount = 0;
+  for (const [i, c] of CITY_DATA.entries()) {
+    const city = await prisma.city.upsert({
+      where: { name: c.name },
+      update: { code: c.code, deliveryFeeCents: c.deliveryFeeCents, sortOrder: i },
+      create: { name: c.name, code: c.code, deliveryFeeCents: c.deliveryFeeCents, sortOrder: i },
+    });
+    // ⚠️ ما بنمسحش المناطق الموجودة — لو الأدمن عدّل أو زاد، ما نرجعوش للوضع الأصلي
+    for (const [j, areaName] of c.areas.entries()) {
+      const existing = await prisma.area.findUnique({ where: { cityId_name: { cityId: city.id, name: areaName } } });
+      if (!existing) {
+        await prisma.area.create({ data: { cityId: city.id, name: areaName, sortOrder: j } });
+        areaCount++;
+      }
+    }
+  }
+  console.log(`✅ المدن: ${await prisma.city.count()} | المناطق: ${await prisma.area.count()}`);
+}
+
 // ======================= المستخدمون =======================
 async function seedUsers() {
   const hash = await bcrypt.hash(PASSWORD, 10);
@@ -442,17 +486,14 @@ async function seedCatalog() {
 }
 
 // ======================= العروض =======================
-async function seedOffers(products, brands, categories) {
-  const catBySlug = Object.fromEntries(categories.map((c) => [c.slug, c]));
-
+// العروض = بانرات عرض فقط (صورة + عنوان + وصف + تواريخ).
+// مفيش خصم ولا ربط بمنتجات/تصنيفات/ماركات.
+async function seedOffers() {
   const offers = [
     {
       title: "خصم 15% على جميع المنتجات",
       description: "عرض لفترة محدودة على كافة المنتجات",
       image: "/uploads/seed/offer-all.jpg",
-      offerType: "DISCOUNT_PERCENTAGE",
-      target: "ALL_PRODUCTS",
-      discountPercentage: 15,
       startDate: daysAgo(20),
       endDate: daysAgo(-15),
       isActive: true,
@@ -462,10 +503,6 @@ async function seedOffers(products, brands, categories) {
       title: "خصم 50 د.ل على الساعات",
       description: "على مجموعة مختارة من الساعات",
       image: "/uploads/seed/offer-watches.jpg",
-      offerType: "DISCOUNT_AMOUNT",
-      target: "SPECIFIC_PRODUCTS",
-      discountAmount: 5000,
-      productIds: [products[3].id, products[17].id],
       startDate: daysAgo(10),
       endDate: daysAgo(-20),
       isActive: true,
@@ -475,9 +512,6 @@ async function seedOffers(products, brands, categories) {
       title: "اشتري واحدة واحصل على الثانية",
       description: "على ماركة Nike",
       image: "/uploads/seed/offer-nike.jpg",
-      offerType: "BUY_ONE_GET_ONE",
-      target: "SPECIFIC_BRANDS",
-      brandIds: [brands.nike.id],
       startDate: daysAgo(30),
       endDate: daysAgo(-5),
       isActive: true,
@@ -487,9 +521,6 @@ async function seedOffers(products, brands, categories) {
       title: "شحن مجاني للعناية بالبشرة",
       description: "لمجموعة العناية بالبشرة بالكامل",
       image: "/uploads/seed/offer-skincare.jpg",
-      offerType: "FREE_SHIPPING",
-      target: "SPECIFIC_CATEGORIES",
-      categoryIds: [catBySlug["skincare"].id],
       startDate: daysAgo(5),
       endDate: daysAgo(-10),
       isActive: true,
@@ -498,21 +529,7 @@ async function seedOffers(products, brands, categories) {
   ];
 
   for (const o of offers) {
-    const { productIds, categoryIds, brandIds, ...data } = o;
-    await prisma.offer.create({
-      data: {
-        ...data,
-        offerProducts: productIds
-          ? { create: productIds.map((productId) => ({ productId })) }
-          : undefined,
-        offerCategories: categoryIds
-          ? { create: categoryIds.map((categoryId) => ({ categoryId })) }
-          : undefined,
-        offerBrands: brandIds
-          ? { create: brandIds.map((brandId) => ({ brandId })) }
-          : undefined,
-      },
-    });
+    await prisma.offer.create({ data: o });
   }
 }
 
@@ -726,8 +743,10 @@ async function main() {
   const { brands, products, variants } = await seedCatalog();
   console.log(`✅ الماركات: ${Object.keys(brands).length} | المنتجات: ${products.length} | المتغيرات: ${variants.length}`);
 
-  await seedOffers(products, brands, categories);
+  await seedOffers();
   console.log(`✅ العروض: ${await prisma.offer.count()}`);
+
+  await seedLocations();
 
   const orders = await seedOrders(users, variants);
   console.log(`✅ الطلبات: ${orders.length}`);

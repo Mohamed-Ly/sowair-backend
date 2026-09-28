@@ -7,7 +7,10 @@ exports.handleValidation = (req, res, next) => {
   if (!errors.isEmpty()) {
     const formattedErrors = {};
     errors.array().forEach(err => {
-      formattedErrors[err.param] = err.msg;
+      // express-validator 7 بقى يستعمل `path` بدل `param`.
+      // بـ `err.param` كانت كل الأخطاء بتتقفل تحت مفتاح واحد "undefined".
+      const key = err.path || err.param || err.field;
+      formattedErrors[key] = err.msg;
     });
     return sendFail(res, { message: "فشل التحقق من البيانات", errors: formattedErrors }, 422);
   }

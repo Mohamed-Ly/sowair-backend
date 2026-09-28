@@ -5,6 +5,7 @@ const { handleValidation } = require("../middlewares/handleValidation");
 const {
   assignmentIdParamValidation,
   assignDeliveryValidation,
+  settleDeliveryValidation,
 } = require("../middlewares/validators");
 
 const {
@@ -15,6 +16,7 @@ const {
   getDeliveryHistory,
   acceptAssignment,
   completeDelivery,
+  settleDelivery,
 } = require("../controllers/delivery.controller");
 
 // ===================== ADMIN =====================
@@ -67,6 +69,16 @@ router.patch(
   assignmentIdParamValidation,
   handleValidation,
   completeDelivery
+);
+// Phase 4: تسجيل التسليم الجزئي (المندوب بيبعت الكمية المسلّمة لكل بند)
+router.post(
+  "/settle/:assignmentId",
+  verifyToken,
+  checkRole("DELIVERY"),
+  assignmentIdParamValidation,
+  settleDeliveryValidation,
+  handleValidation,
+  settleDelivery
 );
 
 module.exports = router;

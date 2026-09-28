@@ -5,6 +5,7 @@ const mapStatusToNotificationType = {
   PENDING: "ORDER_CREATED",
   CONFIRMED: "ORDER_CONFIRMED",
   SHIPPING: "ORDER_SHIPPED",
+  PARTIALLY_DELIVERED: "ORDER_PARTIALLY_DELIVERED",
   DELIVERED: "ORDER_DELIVERED",
   CANCELLED: "ORDER_CANCELLED",
 };
@@ -34,6 +35,11 @@ function buildOrderStatusMessage({ status, orderNumber }) {
       return {
         title: "تم التسليم",
         body: `تم تسليم الطلب رقم ${orderNumber}. نتمنى لك تجربة ممتعة!`,
+      };
+    case "PARTIALLY_DELIVERED":
+      return {
+        title: "تم التسليم جزئياً",
+        body: `تم تسليم جزء من الطلب رقم ${orderNumber}. البنود الراجعة تواصل معنا باش نرتبها.`,
       };
     case "CANCELLED":
       return {

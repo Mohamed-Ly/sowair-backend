@@ -52,6 +52,7 @@ app.use(rateLimiting({
 app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/categories", require("./routes/category.routes"));
 app.use("/api/brands", require("./routes/brand.routes"));
+app.use("/api/suppliers", require("./routes/supplier.routes"));
 app.use("/api/products", require("./routes/product.routes"));
 app.use(
   "/api/products/:productId/variants",
@@ -66,6 +67,9 @@ app.use("/api/users", require("./routes/user.routes"));
 app.use("/api/dashboard", require("./routes/dashboard.routes"));
 app.use("/api/reports", require("./routes/reports.routes"));
 app.use("/api/delivery", require("./routes/delivery.routes"));
+// المدن والمناطق: النسخة العامة للـ checkout، والنسخة الإدارية للأدمن
+app.use("/api/locations", require("./routes/public-location.routes"));
+app.use("/api/admin/locations", require("./routes/location.routes"));
 
 // ✅ Middleware لمعالجة أخطاء Multer والرفع
 app.use((err, req, res, next) => {

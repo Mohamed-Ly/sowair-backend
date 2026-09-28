@@ -8,6 +8,8 @@ const {
   getSummaryReport,
   getProductsReport,
   getOrderStatusReport,
+  getProfitReport,
+  getInventoryValueReport,
   exportReport,
 } = require("../controllers/reports.controller");
 
@@ -31,6 +33,17 @@ router.get(
   reportsQueryValidation,
   handleValidation,
   getOrderStatusReport
+);
+router.get(
+  "/profit",
+  reportsQueryValidation,
+  handleValidation,
+  getProfitReport
+);
+router.get(
+  "/inventory-value",
+  handleValidation,
+  getInventoryValueReport
 );
 router.get(
   "/export",
