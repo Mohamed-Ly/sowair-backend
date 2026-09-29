@@ -29,6 +29,7 @@ model User {
   Notification  Notification[]
   DeviceToken   DeviceToken[]
   DeliveryAssignment DeliveryAssignment[] @relation("DeliveryAssignments")
+  WalletTransaction WalletTransaction[] @relation("CourierWallet")
 }
 
 model Brand {
@@ -219,6 +220,9 @@ model Order {
   deliveryAreaId   Int?
   deliveryCityName String?
   deliveryAreaName String?
+  // رسوم التوصيل لحظة إنشاء الطلب (snapshot مثل الاسم). أساس محفظة المندوب:
+  // لو الأدمن غيّر سعر المنطقة بكرة، محافظ الطلبات القديمة تشتغل برسومها الأصلية.
+  deliveryFeeCents Int @default(0)
 
   cancelDeadline  DateTime? // آخر للإلغاء (24 ساعة) هاذا الوقت خاص بالمستخدم
   cancelledByUser Boolean   @default(false) // هل ألغاه المستخدم؟
@@ -344,6 +348,33 @@ model DeliveryAssignment {
 
   @@index([deliveryId])
   @@index([status])
+}
+
+// ============ محفظة المندوب ============
+// السجل المالي الوحيد لعمولة المندوب. الرصيد يُحسب من السجل:
+//   balance = Σ amountCents  (EARNING و ADJUSTMENT موجبة/موقّعة، SETTLEMENT سالبة)
+// EARNING تُضاف تلقائياً داخل settleDelivery (نفس الـ transaction = مرّة واحدة فقط
+// لأن الطلب يُقفل نهائياً عند التسليم — مفيش تكرار محتمل أصلاً).
+// SETTLEMENT تُسجَّل يدوياً من صفحة «إدارة المندوبين» عند سحب الأدمن للرصيد.
+model WalletTransaction {
+  id            Int      @id @default(autoincrement())
+  courierId     Int
+  type          String // EARNING / SETTLEMENT / ADJUSTMENT
+  // EARNING و ADJUSTMENT موجبتان/موقّعتان، و SETTLEMENT سالبة دايماً
+  amountCents   Int
+  refType       String? // "ORDER" / null (تسوية/تعديل يدوي)
+  refId         Int?
+  orderNumber   String? // snapshot لسهولة القراءة في سجلات المحفظة
+  deliveryFeeCents Int? // snapshot لرسوم التوصيل اللي ولّدت هذه العمولة
+  method        String? // طريقة الصرف (نقدي/تحويل...) — للتسويات فقط
+  note          String?
+  createdAt     DateTime @default(now())
+
+  courier User @relation("CourierWallet", fields: [courierId], references: [id])
+
+  @@index([courierId])
+  @@index([type])
+  @@index([createdAt])
 }
 
 model OrderItem {

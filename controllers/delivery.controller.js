@@ -524,7 +524,43 @@ exports.settleDelivery = async (req, res) => {
         },
       });
 
-      return { ok: true, assignment: updatedAssignment, order: updatedOrder, expectedCents, allDelivered, totalReturned };
+      // ===== محفظة المندوب: عمولة التوصيل =====
+      // النسبة التناسبية: (كميات اتسلّمت فعلاً ÷ إجمالي كميات الطلب) × رسوم التوصيل
+      // snapshot (اللي اتخزّنت على الطلب لحظة الإنشاء، مش السعر الحالي للمنطقة).
+      // داخل نفس الـ transaction + الطلب مقفول نهائياً بعد التسليم = مفيش طريق
+      // لإضافة عمولة مكررة على نفس الطلب أبداً.
+      const totalQtySum = ord.items.reduce((s, i) => s + i.qty, 0);
+      const deliveredQtySum = ord.items.reduce((s, i) => s + sent.get(i.id), 0);
+      const courierEarning =
+        totalQtySum > 0
+          ? Math.round(ord.deliveryFeeCents * (deliveredQtySum / totalQtySum))
+          : 0;
+      if (courierEarning > 0) {
+        await tx.walletTransaction.create({
+          data: {
+            courierId: userId,
+            type: "EARNING",
+            amountCents: courierEarning,
+            refType: "ORDER",
+            refId: ord.id,
+            orderNumber: ord.orderNumber,
+            deliveryFeeCents: ord.deliveryFeeCents,
+            note: allDelivered
+              ? `توصيل الطلب ${ord.orderNumber}`
+              : `توصيل جزئي للطلب ${ord.orderNumber}`,
+          },
+        });
+      }
+
+      return {
+        ok: true,
+        assignment: updatedAssignment,
+        order: updatedOrder,
+        expectedCents,
+        allDelivered,
+        totalReturned,
+        courierEarning,
+      };
     });
 
     order = result.order;
@@ -557,6 +593,7 @@ exports.settleDelivery = async (req, res) => {
         order,
         collectedCents: result.expectedCents,
         returnedTotal: result.totalReturned,
+        courierEarning: result.courierEarning,
         ...(mismatch
           ? {
               warning: `المبلغ المتوقع ${result.expectedCents} قرش (مش ${collectedCents}). استعملنا الرقم المحسوب.`,

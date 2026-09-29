@@ -18,6 +18,7 @@ const {
   completeDelivery,
   settleDelivery,
 } = require("../controllers/delivery.controller");
+const { getMyWallet } = require("../controllers/wallet.controller");
 
 // ===================== ADMIN =====================
 router.post(
@@ -53,6 +54,12 @@ router.get(
   verifyToken,
   checkRole("DELIVERY"),
   getDeliveryHistory
+);
+router.get(
+  "/wallet",
+  verifyToken,
+  checkRole("DELIVERY"),
+  getMyWallet
 );
 router.patch(
   "/accept/:assignmentId",

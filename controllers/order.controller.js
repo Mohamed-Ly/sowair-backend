@@ -32,6 +32,7 @@ exports.createOrder = async (req, res) => {
       let cityName = null;
       let areaName = null;
       let effectiveCityId = deliveryCityId ?? null;
+      let feeCents = 0;
       if (deliveryAreaId || deliveryCityId) {
         const area = deliveryAreaId
           ? await tx.area.findUnique({ where: { id: deliveryAreaId } })
@@ -50,6 +51,13 @@ exports.createOrder = async (req, res) => {
         areaName = area?.name ?? null;
         // لو العميل بعت المنطقة بوحدها، المدينة بتتستنتج منها
         if (area && !effectiveCityId) effectiveCityId = area.cityId;
+        // رسوم التوصيل base = رسوم المنطقة (إن وجدت) وإلا رسوم المدينة.
+        // Snapshot على الطلب عشان محفظة المندوب تظل صحيحة حتى لو اتغير السعر لاحقاً.
+        feeCents = area
+          ? (area.deliveryFeeCents ?? city.deliveryFeeCents)
+          : city
+            ? city.deliveryFeeCents
+            : 0;
       }
       // 1) جلب السلة
       const cart = await tx.cart.findUnique({
@@ -119,6 +127,7 @@ exports.createOrder = async (req, res) => {
           deliveryAreaId: deliveryAreaId ?? null,
           deliveryCityName: cityName,
           deliveryAreaName: areaName,
+          deliveryFeeCents: feeCents,
           orderNumber: generateOrderNumber(),
           cancelDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000), // +24 ساعة
           items: { create: orderItemsData },

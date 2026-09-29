@@ -830,3 +830,20 @@ exports.updateAreaValidation = [
 exports.quoteFeeValidation = [
   body("areaId").isInt({ gt: 0 }).withMessage("المنطقة غير صالحة").toInt(),
 ];
+
+// ======================= محفظة المندوب =======================
+exports.courierIdParamValidation = [
+  param("courierId").isInt({ gt: 0 }).withMessage("معرّف المندوب غير صالح"),
+];
+
+exports.settleWalletValidation = [
+  body("amountCents").isInt({ gt: 0 }).withMessage("مبلغ السحب لازم يكون رقم صحيح أكبر من صفر").toInt(),
+  body("method").optional().trim().isLength({ max: 120 }).withMessage("طريقة الصرف طويلة جداً"),
+  body("note").optional().trim().isLength({ max: 300 }).withMessage("الملاحظة طويلة جداً"),
+];
+
+exports.adjustWalletValidation = [
+  body("amountCents").isInt({ gt: 0 }).withMessage("المبلغ لازم يكون رقم صحيح أكبر من صفر").toInt(),
+  body("direction").isIn(["ADD", "REMOVE"]).withMessage("الاتجاه لازم يكون ADD أو REMOVE"),
+  body("note").optional().trim().isLength({ max: 300 }).withMessage("الملاحظة طويلة جداً"),
+];

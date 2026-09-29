@@ -70,6 +70,7 @@ app.use("/api/delivery", require("./routes/delivery.routes"));
 // المدن والمناطق: النسخة العامة للـ checkout، والنسخة الإدارية للأدمن
 app.use("/api/locations", require("./routes/public-location.routes"));
 app.use("/api/admin/locations", require("./routes/location.routes"));
+app.use("/api/admin/wallets", require("./routes/wallet.routes"));
 
 // ✅ Middleware لمعالجة أخطاء Multer والرفع
 app.use((err, req, res, next) => {
