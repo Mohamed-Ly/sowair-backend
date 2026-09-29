@@ -1,9 +1,12 @@
 // controllers/wallet.controller.js
 //
-// محفظة المندوب: الرصيد يُحسب من سجل WalletTransaction
-//   balance = Σ amountCents  (EARNING ومكوّنات ADJUSTMENT موجبة، SETTLEMENT سالبة)
-// عمولة التوصيل (EARNING) بتتولد تلقائياً داخل settleDelivery — هنا بنتعامل
-// مع القراءة للمندوب/الأدمن + التسويات اليدوية (SETTLEMENT) والتصحيحات (ADJUSTMENT).
+// محفظة المندوب = "عهدة" المتجر: أموال المنتجات اللي المندوب قبضها نقداً من
+// العملاء عند الاستلام وما زال مدين بيها للمتجر لحد ما يسلمها.
+//   balance = Σ amountCents  (EARNING + موجبة عهدة، ADJUSTMENT موقّعة ±،
+//                             SETTLEMENT سالبة = تسليم عهدة للمتجر)
+// عهدة (EARNING) بتتولد تلقائياً داخل settleDelivery بقيمة المنتجات المسلّمة —
+// هنا بنتعامل مع القراءة للمندوب/الأدمن + التسليم اليدوي (SETTLEMENT)
+// والتصحيحات (ADJUSTMENT).
 const prisma = require("../config/prisma");
 const {
   sendSuccess,
@@ -14,6 +17,10 @@ const {
 } = require("../utils/responseHelper");
 
 // يجمع سجلات محفظة مندوب إلى ملخص { earnedCents, settledCents, balanceCents, adjustmentCents }
+// earnedCents = إجمالي العهدة اللي اتولدت من التسليمات
+// settledCents = المسلّم للمتجر (سالب)
+// adjustmentCents = تصحيحات يدوية (موقّعة ±)
+// balanceCents  = العهدة اللي لسه مدين بيها المندوب للمتجر
 async function getWalletTotals(courierId) {
   const groups = await prisma.walletTransaction.groupBy({
     by: ["type"],
@@ -31,7 +38,7 @@ async function getWalletTotals(courierId) {
 
   return {
     ...totals,
-    // رصيد صافي صحيح يدوياً (يتدرّج لصفر بدل النزول تحت الصفر إن حصل احتساب قديم)
+    // رصيد صافي = العهدة المتبقية (يتدرّج لصفر بدل النزول تحت الصفر إن حصل احتساب قديم)
     balanceCents: Math.max(0, totals.earnedCents + totals.adjustmentCents + totals.settledCents),
   };
 }
@@ -136,7 +143,7 @@ exports.getCourierTransactions = async (req, res) => {
   }
 };
 
-// POST /api/admin/wallets/:courierId/settle - صرف رصيد (يدوي)
+// POST /api/admin/wallets/:courierId/settle - تحصيل عهدة من المندوب (يدوي)
 // body: { amountCents, method?, note? }
 exports.settleWallet = async (req, res) => {
   try {
@@ -152,7 +159,7 @@ exports.settleWallet = async (req, res) => {
     const totals = await getWalletTotals(courierId);
     if (amountCents > totals.balanceCents) {
       businessError(
-        `الرصيد الحالي ${totals.balanceCents} قرش — لا يمكن صرف ${amountCents} قرش`
+        `العهدة الحالية ${totals.balanceCents} قرش — لا يمكن تحصيل ${amountCents} قرش`
       );
     }
 
@@ -162,7 +169,7 @@ exports.settleWallet = async (req, res) => {
         type: "SETTLEMENT",
         amountCents: -amountCents,
         method: method || "نقدي",
-        note: note || "صرف رصيد محفظة",
+        note: note || "تسليم عهدة للمتجر",
       },
     });
 
@@ -172,7 +179,7 @@ exports.settleWallet = async (req, res) => {
       {
         transaction,
         wallet: after,
-        message: `تم صرف ${amountCents} قرش بنجاح`,
+        message: `تم تحصيل ${amountCents} قرش من ${courier.name}`,
       },
       200
     );
@@ -268,7 +275,7 @@ exports.getMyWallet = async (req, res) => {
       0
     );
 
-    // عمولة الشهر الحالي (لتوعية بسيطة في شاشة المحفظة)
+    // عهدة الشهر الحالية (لتوعية بسيطة في شاشة المحفظة)
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
