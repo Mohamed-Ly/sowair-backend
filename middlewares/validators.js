@@ -259,11 +259,11 @@ exports.createVariantValidation = [
     .isInt({ min: 0 })
     .withMessage("المخزون يجب أن يكون 0 أو أكبر"),
   body("option1")
-    .optional()
+    .optional({ values: "falsy" })
     .isLength({ min: 1, max: 120 })
     .withMessage("الخيار الأول غير صالح"),
   body("option2")
-    .optional()
+    .optional({ values: "falsy" })
     .isLength({ min: 1, max: 120 })
     .withMessage("الخيار الثاني غير صالح"),
   body("sku")
@@ -298,11 +298,11 @@ exports.updateVariantValidation = [
     .isInt({ min: 0 })
     .withMessage("المخزون يجب أن يكون 0 أو أكبر"),
   body("option1")
-    .optional()
+    .optional({ values: "falsy" })
     .isLength({ min: 1, max: 120 })
     .withMessage("الخيار الأول غير صالح"),
   body("option2")
-    .optional()
+    .optional({ values: "falsy" })
     .isLength({ min: 1, max: 120 })
     .withMessage("الخيار الثاني غير صالح"),
   body("sku")
