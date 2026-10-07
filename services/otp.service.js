@@ -62,31 +62,37 @@ async function issueOtp(phone, purpose, { metadata } = {}) {
     data: { consumedAt: new Date() },
   });
 
-  const pin = generatePin();
+  // ⭐ نطلب الرمز من المزوّد أولاً: /pins يرجّع الكود الفعلي المرسل للمستخدم،
+  // ولنخزّن هاشه. (لا نولّد رمزاً محلياً أبداً — وإلا لم يطابق الكود الحقيقي)
+  const otpValue = await otpCodeFromProvider(phone);
+
   const otp = await prisma.otpCode.create({
     data: {
       phone,
       purpose,
-      pinHash: hashPin(pin),
+      pinHash: hashPin(otpValue),
       expiresAt: new Date(Date.now() + PIN_TTL_MINUTES * 60 * 1000),
       ...(payload ? { metadata: payload } : {}),
     },
   });
 
-  try {
-    // 🧪 وضع الاختبار فقط: مطبوع في السجل المحلي لسهولة التطوير، لا يُطبع في الإنتاج
-    if (resala.TEST_MODE) {
-      console.log(`[OTP:${purpose}] ${phone} → ${pin}`);
-    }
-    await resala.sendOtp(phone, { pinLength: PIN_LENGTH, autofill: hashPin(pin) });
-  } catch (e) {
-    // فشل الإرسال → نحذف الرمز حتى لا يبقى "معلّقاً" بلا رسالة فعلية
-    await prisma.otpCode.delete({ where: { id: otp.id } }).catch(() => {});
-    throw e;
+  // 🧪 وضع الاختبار فقط: مطبوع في السجل المحلي لسهولة التطوير، لا يُطبع في الإنتاج
+  if (resala.TEST_MODE) {
+    console.log(`[OTP:${purpose}] ${phone} → ${otpValue}`);
   }
 
   // نرجّع الرمز في وضع الاختبار فقط (تطوير محلي، لا يُكشف في الإنتاج)
-  return { otpId: otp.id, ...(resala.TEST_MODE ? { devPin: pin } : {}) };
+  return { otpId: otp.id, ...(resala.TEST_MODE ? { devPin: otpValue } : {}) };
+}
+
+// طلب رمز تحقق من "رسالة" وإرجاع الكود الفعلي الذي يراه المستخدم
+async function otpCodeFromProvider(phone) {
+  const data = await resala.sendOtp(phone, { pinLength: PIN_LENGTH });
+  const value = String(data?.pin ?? data?.code ?? "").trim();
+  if (!/^\d{4,6}$/.test(value)) {
+    businessError("لم يحصل المزوّد على رمز تحقق صالح — حاول مرة أخرى");
+  }
+  return value;
 }
 
 // التحقق من رمز OTP.
