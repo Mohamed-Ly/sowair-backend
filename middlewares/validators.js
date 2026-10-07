@@ -39,6 +39,55 @@ exports.loginValidation = [
   body("password").notEmpty().withMessage("يرجى إدخال كلمة المرور"),
 ];
 
+// ======================= OTP =======================
+
+const otpPurpose = ["REGISTER", "RESET_PASSWORD"];
+
+const phoneBody = (field = "phone") =>
+  body(field)
+    .matches(phoneRegex)
+    .withMessage("صيغة رقم الهاتف غير صحيحة")
+    .trim()
+    .notEmpty()
+    .withMessage("رقم الهاتف مطلوب");
+
+const otpCodeBody = () =>
+  body("otp")
+    .matches(/^\d{4,6}$/)
+    .withMessage("رمز التحقق غير صالح (4-6 أرقام)")
+    .trim()
+    .notEmpty()
+    .withMessage("رمز التحقق مطلوب");
+
+exports.verifyOtpValidation = [
+  phoneBody(),
+  body("purpose")
+    .isIn(otpPurpose)
+    .withMessage("الغرض من الرمز غير صالح")
+    .notEmpty()
+    .withMessage("الغرض من الرمز مطلوب"),
+  otpCodeBody(),
+];
+
+exports.resendOtpValidation = [
+  phoneBody(),
+  body("purpose")
+    .isIn(otpPurpose)
+    .withMessage("الغرض من الرمز غير صالح")
+    .notEmpty()
+    .withMessage("الغرض من الرمز مطلوب"),
+];
+
+exports.forgotPasswordValidation = [phoneBody()];
+
+exports.resetPasswordValidation = [
+  phoneBody(),
+  otpCodeBody(),
+  body("newPassword")
+    .isLength({ min: 8 })
+    .withMessage("كلمة المرور يجب ألا تقل عن 8 أحرف"),
+];
+
 // ======================= Categories =======================
 
 exports.createCategoryValidation = [

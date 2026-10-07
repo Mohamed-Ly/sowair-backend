@@ -519,3 +519,24 @@ model RefreshToken {
 
   @@index([userId])
 }
+
+// ============ رموز التحقق OTP (مزود "رسالة") ============
+// سجل مستقل عن User حتى لا يتأثر الحساب قبل اكتمال التحقق.
+// لا نخزّن الرمز نصياً أبداً — نخزّن sha256(pinHash) فقط.
+model OtpCode {
+  id        Int      @id @default(autoincrement())
+  phone     String
+  purpose   String // REGISTER | RESET_PASSWORD
+  pinHash   String // sha256(pin) — لا نخزّن الرمز نصياً
+  expiresAt DateTime // الصلاحية (5 دقائق)
+  attempts  Int      @default(0) // المحاولات الفاشلة (الحد 5)
+  consumedAt DateTime? // وقت الاستهلاك الناجح
+  createdAt DateTime  @default(now())
+  // بيانات التسجيل المؤقتة (name/email/phone/passwordHash) — تُحمل عند
+  // إعادة الإرسال حتى لا يضطر المستخدم لإعادة كتابة البيانات.
+  metadata  Json?
+
+  @@index([phone])
+  @@index([phone, purpose])
+  @@index([createdAt])
+}

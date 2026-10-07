@@ -2,12 +2,24 @@
 const prisma = require("../config/prisma");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const { sendSuccess, sendFail, sendError } = require("../utils/responseHelper");
+const { sendSuccess, sendFail, sendError, isBusinessError } = require("../utils/responseHelper");
 const { generateAccessToken, generateRefreshToken, hashToken } = require("../utils/JWTHelper");
 const { mergeGuestCartAndWishlistToUser } = require("../utils/guestMerge");
+const otpService = require("../services/otp.service");
 
 const JWT_SECRET = process.env.JWT_SECRET_KEY;
 const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET_KEY;
+
+// توجيه الأخطاء: منطقي ← 400، خطأ مزود رسائل ← 502، غير ذلك ← 500
+function mapError(res, e) {
+  if (isBusinessError(e)) {
+    return sendFail(res, { message: e.message }, e.statusCode || 400);
+  }
+  if (e && e.code === "RESALA_ERROR") {
+    return sendFail(res, { message: e.message }, e.status || 502);
+  }
+  return sendError(res, e.message, 500);
+}
 
 // أداة مساعدة لحساب انتهاء الريفريش (مطابقة REFRESH_EXP ≈ 7 أيام)
 function addDays(date, days) {
@@ -54,6 +66,9 @@ async function issueTokensAndPersist(user) {
   return { accessToken, refreshToken };
 }
 
+// POST /api/auth/register — «نية تسجيل»: نتحقق من التفرّد، نخزّن البيانات مؤقتاً
+// في سجل OTP (metadata) ونرسل رمز التحقق. لا يُنشأ المستخدم ولا تصدر توكنات
+// إلا بعد نجاح POST /api/auth/verify-otp.
 exports.register = async (req, res) => {
   try {
     const { name, email, phone, password } = req.body;
@@ -66,21 +81,134 @@ exports.register = async (req, res) => {
       return sendFail(res, { message: "البريد أو الهاتف مستخدم بالفعل" }, 400);
     }
 
-    const hash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 10);
 
-    const user = await prisma.user.create({
-      data: { name, email, phone, password: hash },
-      select: { id: true, name: true, email: true, phone: true, role: true, createdAt: true }
+    await otpService.issueOtp(phone, otpService.OTP_PURPOSE.REGISTER, {
+      metadata: { name, email, phone, passwordHash }
     });
 
-    const { accessToken, refreshToken } = await issueTokensAndPersist(user);
-
-    // دمج بيانات الزائر (سلة/مفضلة) مع الحساب الجديد
-    await mergeGuestData(req, user.id);
-
-    return sendSuccess(res, { user, accessToken, refreshToken }, 200);
+    return sendSuccess(res, {
+      requiresOtp: true,
+      purpose: otpService.OTP_PURPOSE.REGISTER,
+      phone,
+      message: "تم إرسال رمز التحقق إلى هاتفك"
+    }, 201);
   } catch (e) {
-    return sendError(res, e.message, 500);
+    return mapError(res, e);
+  }
+};
+
+// POST /api/auth/verify-otp { phone, purpose, otp }
+// - REGISTER: ينشئ المستخدم من metadata الرمز ويصدر التوكنات ويدمج بيانات الزائر.
+// - RESET_PASSWORD: يعيد رسالة نجاح فقط (إعادة التعيين كاملة في reset-password).
+exports.verifyOtp = async (req, res) => {
+  try {
+    const { phone, purpose, otp } = req.body;
+
+    const record = await otpService.verifyOtp(phone, purpose, otp, { consume: false });
+
+    if (purpose === otpService.OTP_PURPOSE.REGISTER) {
+      const meta = record.metadata;
+      if (!meta || !meta.name || !meta.email || !meta.passwordHash) {
+        return sendFail(res, { message: "بيانات التسجيل مفقودة — أعد المحاولة من البداية" }, 400);
+      }
+
+      // حماية من الإرسال المزدوج: لو أُنشئ الحساب فعلاناً بين الخطوتين
+      const already = await prisma.user.findFirst({
+        where: { OR: [{ email: meta.email }, { phone }] },
+        select: { id: true }
+      });
+      if (already) {
+        return sendFail(res, { message: "هذا الحساب مسجل بالفعل — يمكنك تسجيل الدخول" }, 400);
+      }
+
+      const user = await prisma.user.create({
+        data: { name: meta.name, email: meta.email, phone, password: meta.passwordHash },
+        select: { id: true, name: true, email: true, phone: true, role: true, createdAt: true }
+      });
+
+      // استهلاك الرمز فقط بعد نجاح إنشاء الحساب
+      await otpService.consumeOtp(record.id);
+
+      const { accessToken, refreshToken } = await issueTokensAndPersist(user);
+      await mergeGuestData(req, user.id);
+
+      return sendSuccess(res, { user, accessToken, refreshToken }, 201);
+    }
+
+    return sendSuccess(res, { message: "تم التحقق من الرمز بنجاح" }, 200);
+  } catch (e) {
+    return mapError(res, e);
+  }
+};
+
+// POST /api/auth/resend-otp { phone, purpose } — مهلة 60 ثانية تُفرض في الخدمة
+exports.resendOtp = async (req, res) => {
+  try {
+    const { phone, purpose } = req.body;
+    await otpService.issueOtp(phone, purpose);
+    return sendSuccess(res, { message: "تم إعادة إرسال الرمز" }, 200);
+  } catch (e) {
+    return mapError(res, e);
+  }
+};
+
+// POST /api/auth/forgot-password { phone }
+// رد موحّد دائماً (مكافحة تعداد المستخدمين): لا نكشف هل الرقم مسجل أم لا.
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { phone }, select: { id: true } });
+    if (user) {
+      await otpService.issueOtp(phone, otpService.OTP_PURPOSE.RESET_PASSWORD);
+    }
+
+    return sendSuccess(
+      res,
+      { message: "إن كان الرقم مسجلاً، سيصلك رمز التحقق عبر رسالة نصية" },
+      200
+    );
+  } catch (e) {
+    return mapError(res, e);
+  }
+};
+
+// POST /api/auth/reset-password { phone, otp, newPassword }
+exports.resetPassword = async (req, res) => {
+  try {
+    const { phone, otp, newPassword } = req.body;
+
+    const record = await otpService.verifyOtp(
+      phone,
+      otpService.OTP_PURPOSE.RESET_PASSWORD,
+      otp,
+      { consume: false }
+    );
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const updated = await prisma.user.updateMany({
+      where: { phone },
+      data: { password: passwordHash }
+    });
+    if (!updated.count) {
+      return sendFail(res, { message: "لم يعد هذا الرقم مسجلاً لدينا" }, 400);
+    }
+
+    await otpService.consumeOtp(record.id);
+
+    // أمان: بعد تغيير كلمة المرور نسحب كل جلسات المستخدم القديمة
+    const tokenUser = await prisma.user.findUnique({ where: { phone }, select: { id: true } });
+    if (tokenUser) {
+      await prisma.refreshToken.updateMany({
+        where: { userId: tokenUser.id, revokedAt: null },
+        data: { revokedAt: new Date() }
+      });
+    }
+
+    return sendSuccess(res, { message: "تم تغيير كلمة المرور بنجاح" }, 200);
+  } catch (e) {
+    return mapError(res, e);
   }
 };
 
