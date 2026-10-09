@@ -14,12 +14,13 @@ exports.registerValidation = [
     .trim()
     .notEmpty()
     .withMessage("الاسم مطلوب"),
+  // البريد الإلكتروني اختياري: يُترك فارغاً إن رغب المستخدم.
   body("email")
+    .optional({ checkFalsy: true })
     .isEmail()
     .withMessage("صيغة البريد الإلكتروني غير صحيحة")
     .trim()
-    .notEmpty()
-    .withMessage("البريد الإلكتروني مطلوب"),
+    .normalizeEmail(),
   body("phone")
     .matches(phoneRegex)
     .withMessage("صيغة رقم الهاتف غير صحيحة")
@@ -719,7 +720,7 @@ exports.updateUserValidation = [
     .isLength({ min: 2, max: 50 })
     .withMessage("الاسم يجب أن يكون بين 2 و 50 حرفًا"),
   body("email")
-    .optional()
+    .optional({ checkFalsy: true })
     .isEmail()
     .withMessage("صيغة البريد الإلكتروني غير صحيحة"),
   body("phone")
