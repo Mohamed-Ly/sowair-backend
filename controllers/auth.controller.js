@@ -71,14 +71,17 @@ async function issueTokensAndPersist(user) {
 // إلا بعد نجاح POST /api/auth/verify-otp.
 exports.register = async (req, res) => {
   try {
-    const { name, email, phone, password } = req.body;
+    const { name, phone, password } = req.body;
+    // البريد اختياري: إن أُرسل نظّفه ووحّد الحروف، وإن كان فارغاً نخزّنه null
+    const email = (req.body.email || "").trim().toLowerCase() || null;
 
+    const orConditions = email ? [{ email }, { phone }] : [{ phone }];
     const exists = await prisma.user.findFirst({
-      where: { OR: [{ email }, { phone }] },
+      where: { OR: orConditions },
       select: { id: true }
     });
     if (exists) {
-      return sendFail(res, { message: "البريد أو الهاتف مستخدم بالفعل" }, 400);
+      return sendFail(res, { message: "البريد (إن أُدخل) أو الهاتف مستخدم بالفعل" }, 400);
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -109,13 +112,15 @@ exports.verifyOtp = async (req, res) => {
 
     if (purpose === otpService.OTP_PURPOSE.REGISTER) {
       const meta = record.metadata;
-      if (!meta || !meta.name || !meta.email || !meta.passwordHash) {
+      if (!meta || !meta.name || !meta.passwordHash) {
         return sendFail(res, { message: "بيانات التسجيل مفقودة — أعد المحاولة من البداية" }, 400);
       }
 
       // حماية من الإرسال المزدوج: لو أُنشئ الحساب فعلاناً بين الخطوتين
+      const email = meta.email ? meta.email : null;
+      const orConditions = email ? [{ email }, { phone }] : [{ phone }];
       const already = await prisma.user.findFirst({
-        where: { OR: [{ email: meta.email }, { phone }] },
+        where: { OR: orConditions },
         select: { id: true }
       });
       if (already) {
@@ -123,7 +128,7 @@ exports.verifyOtp = async (req, res) => {
       }
 
       const user = await prisma.user.create({
-        data: { name: meta.name, email: meta.email, phone, password: meta.passwordHash },
+        data: { name: meta.name, email, phone, password: meta.passwordHash },
         select: { id: true, name: true, email: true, phone: true, role: true, createdAt: true }
       });
 
@@ -224,7 +229,7 @@ exports.login = async (req, res) => {
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return sendFail(res, { message: "بيانات الدخول غير صحيحة" }, 401);
 
-    const safeUser = { id: user.id, name: user.name, email: user.email, phone: user.phone, createdAt: user.createdAt };
+    const safeUser = { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, createdAt: user.createdAt };
     const { accessToken, refreshToken } = await issueTokensAndPersist(user);
 
     // دمج بيانات الزائر (سلة/مفضلة) مع الحساب عند تسجيل الدخول
