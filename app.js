@@ -43,7 +43,7 @@ app.use(xss());
 // }));
 app.use(rateLimiting({
   windowMs: 15 * 60 * 1000, // 15 دقيقة
-  max: 700, // حد أقصى 700 طلب لكل مستخدم في ربع ساعة
+  max: 1000, // حد أقصى 1000 طلب لكل مستخدم في ربع ساعة
   message: { success: false, message: "Too many requests. Please try again later." }
 }));
 

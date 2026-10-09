@@ -9,8 +9,9 @@ const PIN_LENGTH = process.env.RESALA_PIN_LENGTH
   ? parseInt(process.env.RESALA_PIN_LENGTH, 10)
   : 6;
 const PIN_TTL_MINUTES = 5; // صلاحية الرمز
-const MAX_ATTEMPTS = 5; // الحد الأقصى للمحاولات الفاشلة
+const MAX_ATTEMPTS = 5; // الحد الأقصى للمحاولات الفاشلة للرمز الواحد
 const RESEND_COOLDOWN_MS = 60 * 1000; // مهلة إعادة الإرسال (60 ثانية)
+const MAX_ISSUES_PER_PHONE_PER_DAY = 5; // حد يومي لإصدار الرموز لنفس الرقم (حماية من إساءة الاستخدام)
 
 const OTP_PURPOSE = Object.freeze({
   REGISTER: "REGISTER",
@@ -42,6 +43,18 @@ function pinsMatch(attemptPin, record) {
 // - يُبطل أي رمز سابق غير مستهلك (يُترك الأخير فقط صالحاً).
 // - عند إعادة الإرسال للتسجيل، تُحمل بيانات التسجيل الأصلية من آخر سجل.
 async function issueOtp(phone, purpose, { metadata } = {}) {
+  // ⛔ حد يومي (نافذة 24 ساعة متجددة): يمنع إرسال أكثر من الحد المسموح
+  // للرقم الواحد مهما كان الغرض — حماية من إهدار الرسائل وإساءة الاستخدام.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const issuedToday = await prisma.otpCode.count({
+    where: { phone, createdAt: { gte: since } },
+  });
+  if (issuedToday >= MAX_ISSUES_PER_PHONE_PER_DAY) {
+    businessError(
+      "تجاوزت الحد اليومي لإرسال رموز التحقق — عاود المحاولة بعد 24 ساعة"
+    );
+  }
+
   const latest = await prisma.otpCode.findFirst({
     where: { phone, purpose },
     orderBy: { createdAt: "desc" },
