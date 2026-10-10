@@ -325,6 +325,14 @@ exports.deleteUser = async (req, res) => {
       }
       await prisma.order.deleteMany({ where: { userId } });
 
+      // حذف باقي الارتباطات التي تمنع الحذف (عهدة المحفظة، إسنادات التوصيل، الأجهزة، OTP)
+      await prisma.walletTransaction.deleteMany({ where: { courierId: userId } });
+      await prisma.deliveryAssignment.deleteMany({ where: { deliveryId: userId } });
+      await prisma.deviceToken.deleteMany({ where: { userId } });
+      if (user.phone) {
+        await prisma.otpCode.deleteMany({ where: { phone: user.phone } });
+      }
+
       // أخيراً حذف المستخدم
       await prisma.user.delete({
         where: { id: userId },
@@ -344,7 +352,7 @@ exports.deleteUser = async (req, res) => {
         200
       );
     } catch (error) {
-      throw error;
+      return sendError(res, error.message, 500);
     }
   });
 };

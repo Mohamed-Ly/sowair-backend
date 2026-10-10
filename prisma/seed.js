@@ -26,9 +26,6 @@ async function resetDatabase() {
   await prisma.cartItem.deleteMany();
   await prisma.cart.deleteMany();
   await prisma.refreshToken.deleteMany();
-  await prisma.offerProduct.deleteMany();
-  await prisma.offerCategory.deleteMany();
-  await prisma.offerBrand.deleteMany();
   await prisma.offer.deleteMany();
   await prisma.productCategory.deleteMany();
   await prisma.productImage.deleteMany();

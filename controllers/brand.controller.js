@@ -159,8 +159,7 @@ exports.deleteBrand = async (req, res) => {
       where: { id },
       include: {
         products: { take: 1 }, // نتحقق من وجود منتجات
-        OfferBrand: { take: 1 } // والعلاقات مع العروض
-      }
+      },
     });
     
     if (!existing) {
@@ -173,11 +172,6 @@ exports.deleteBrand = async (req, res) => {
         message: "لا يمكن حذف الماركة لأنها تحتوي على منتجات. يرجى نقل المنتجات أولاً أو حذفها."
       }, 400);
     }
-
-    // حذف العلاقات مع العروض أولاً
-    await prisma.offerBrand.deleteMany({
-      where: { brandId: id }
-    });
 
     // ثم حذف الماركة
     await prisma.brand.delete({ where: { id } });

@@ -181,14 +181,33 @@ exports.deleteVariant = async (req, res) => {
     const variantId = Number(req.params.variantId);
 
     const existing = await prisma.productVariant.findFirst({
-      where: { id: variantId, productId }
+      where: { id: variantId, productId },
+      include: { OrderItem: { take: 1 }, CartItem: { take: 1 } },
     });
     if (!existing) return sendFail(res, { message: "المتغير غير موجود" }, 404);
 
-    await prisma.productVariant.delete({ where: { id: variantId } });
+    // ⛔ لا حذف متغير ورد في طلبات — يكسر سجل الطلبات والتقارير
+    if (existing.OrderItem.length > 0) {
+      return sendFail(
+        res,
+        {
+          message:
+            "لا يمكن حذف المتغير لأنه مرتبط بطلبات سابقة (يؤثر على التقارير). يمكنك إلغاء تفعيله بدلاً من ذلك.",
+        },
+        409
+      );
+    }
+
+    // حذف نهائي مع تنظيف السلة (إن وُجدت عناصر)
+    await prisma.$transaction(async (tx) => {
+      await tx.cartItem.deleteMany({ where: { variantId } });
+      await tx.productVariant.delete({ where: { id: variantId } });
+    });
+
     return sendSuccess(res, { message: "تم حذف المتغير بنجاح" }, 200);
   } catch (e) {
-    return sendError(res, e.message, 500);
+    console.error("❌ Error in deleteVariant:", e);
+    return sendError(res, "فشل حذف المتغير", 500);
   }
 };
 

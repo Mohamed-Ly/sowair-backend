@@ -317,8 +317,9 @@ exports.updateProduct = async (req, res) => {
     categoryId = norm(categoryId); // 🔧 معالجة categoryId
     if (typeof description !== "string") description = undefined;
 
-    // 🔧 تحويل isActive إلى Boolean
-    isActive = parseBoolean(isActive);
+    // 🔧 تحويل isActive إلى Boolean — فقط عند الإرسال، حتى لا يُلغى التفعيل
+    // في التعديلات الجزئية (parseBoolean(undefined) كانت تُعيد false).
+    if (typeof isActive !== "undefined") isActive = parseBoolean(isActive);
 
     // معالجة slug (فريد)
     if (slug) {
@@ -430,87 +431,105 @@ exports.updateProduct = async (req, res) => {
 };
 
 // =================== DELETE ===================
+// سياسة الحذف:
+// - المنتج المرتبط بطلبات (orderItem) لا يُحذف نهائياً — حذفه يكسّر سجل
+//   الطلبات والتقارير والأرباح. نرفض الحذف ونرشّح إلغاء التفعيل (soft delete).
+// - المنتج غير المرتبط بطلبات يُحذف نهائياً مع تنظيف مرتب (سلة/مفضلة/تصنيفات/صور/متغيرات).
 exports.deleteProduct = async (req, res) => {
-  const txn = await prisma.$transaction(async (prisma) => {
-    try {
-      const id = Number(req.params.id);
+  try {
+    const id = Number(req.params.id);
 
-      // التحقق من وجود المنتج مع جميع العلاقات
-      const existing = await prisma.product.findUnique({
-        where: { id },
-        include: {
-          images: true,
-          ProductVariant: { take: 1 },
-          WishlistItem: { take: 1 },
-          OfferProduct: { take: 1 },
-        },
-      });
+    // التحقق من وجود المنتج مع جميع العلاقات (بدون OfferProduct — أُزيل من المخطط)
+    const existing = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        images: true,
+        ProductVariant: { select: { id: true } },
+        ProductCategory: { take: 1 },
+        WishlistItem: { take: 1 },
+      },
+    });
 
-      if (!existing) {
-        return sendFail(res, { message: "المنتج غير موجود" }, 404);
-      }
-
-      // 1. حذف ملفات الصور من السيرڤر
-      existing.images.forEach((img) =>
-        safeUnlink(path.join("uploads", img.path))
-      );
-
-      // 2. حذف جميع البيانات المرتبطة بالترتيب الصحيح:
-
-      // أ. حذف عناصر السلة المرتبطة بالـ variants
-      const variantIds = existing.ProductVariant.map((v) => v.id);
-      if (variantIds.length > 0) {
-        await prisma.cartItem.deleteMany({
-          where: { variantId: { in: variantIds } },
-        });
-      }
-
-      // ب. حذف عناصر الطلبات المرتبطة بالـ variants
-      if (variantIds.length > 0) {
-        await prisma.orderItem.deleteMany({
-          where: { variantId: { in: variantIds } },
-        });
-      }
-
-      // ج. حذف المتغيرات
-      await prisma.productVariant.deleteMany({
-        where: { productId: id },
-      });
-
-      // د. حذف الصور
-      await prisma.productImage.deleteMany({
-        where: { productId: id },
-      });
-
-      // هـ. حذف عناصر المفضلة
-      await prisma.wishlistItem.deleteMany({
-        where: { productId: id },
-      });
-
-      // و. حذف العلاقات مع العروض
-      await prisma.offerProduct.deleteMany({
-        where: { productId: id },
-      });
-
-      // ز. حذف العلاقات مع التصنيفات المتعددة
-      await prisma.productCategory.deleteMany({
-        where: { productId: id },
-      });
-
-      // ح. أخيراً حذف المنتج نفسه
-      await prisma.product.delete({
-        where: { id },
-      });
-
-      return sendSuccess(
-        res,
-        { message: "تم حذف المنتج وجميع بياناته بنجاح" },
-        200
-      );
-    } catch (e) {
-      throw e;
+    if (!existing) {
+      return sendFail(res, { message: "المنتج غير موجود" }, 404);
     }
-  });
+
+    const variantIds = existing.ProductVariant.map((v) => v.id);
+
+    // ⛔ قاعدة العمل: لا حذف نهائي لمنتج ورد في أي طلب
+    const orderItemCount = variantIds.length
+      ? await prisma.orderItem.count({
+          where: { variantId: { in: variantIds } },
+        })
+      : 0;
+    if (orderItemCount > 0) {
+      return sendFail(
+        res,
+        {
+          message:
+            "لا يمكن حذف المنتج نهائياً لأنه مرتبط بطلبات سابقة (يؤثر على التقارير). يمكنك إلغاء تفعيله بدلاً من ذلك.",
+        },
+        409
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. حذف ملفات الصور من السيرڤر (تجاهل فشل حذف ملف واحد)
+      for (const img of existing.images) {
+        try {
+          safeUnlink(path.join("uploads", img.path));
+        } catch (_) {
+          /* تجاهل */
+        }
+      }
+
+      // 2. حذف البيانات المرتبطة بالترتيب الصحيح
+      if (variantIds.length > 0) {
+        await tx.cartItem.deleteMany({
+          where: { variantId: { in: variantIds } },
+        });
+        await tx.productVariant.deleteMany({
+          where: { productId: id },
+        });
+      }
+
+      // عناصر المفضلة + صلات التصنيفات المتعددة + الصور
+      await tx.wishlistItem.deleteMany({
+        where: { productId: id },
+      });
+      await tx.productCategory.deleteMany({
+        where: { productId: id },
+      });
+      await tx.productImage.deleteMany({
+        where: { productId: id },
+      });
+
+      // 3. أخيراً حذف المنتج نفسه
+      await tx.product.delete({
+        where: { id },
+      });
+    });
+
+    return sendSuccess(
+      res,
+      { message: "تم حذف المنتج وجميع بياناته بنجاح" },
+      200
+    );
+  } catch (e) {
+    // لا نترك الخطأ يوقف السيرفر
+    if (e.code === "P2003") {
+      return sendFail(
+        res,
+        {
+          message:
+            "المنتج مرتبط ببيانات أخرى لا يمكن حذفها — يمكنك إلغاء تفعيله بدلاً من ذلك",
+        },
+        409
+      );
+    }
+    console.error("❌ Error in deleteProduct:", e);
+    return sendError(res, "فشل حذف المنتج", 500);
+  }
 };
 
 // =================== COUNT (Dashboard) ===================

@@ -67,6 +67,13 @@ exports.listCategories = async (req, res) => {
       where.parentId = null;
     }
 
+    // فلتر isActive (اختياري): "true" | "false" — تحقق من أن الواجهات التي
+    // تطلب "true" فقط (مثل تطبيقات المستخدم) لا تعود لها تصنيفات ملغاة
+    const isActiveParam = req.query.isActive;
+    if (typeof isActiveParam !== "undefined") {
+      where.isActive = String(isActiveParam).toLowerCase() === "true";
+    }
+
     const [total, categories] = await Promise.all([
       prisma.category.count({ where }),
       prisma.category.findMany({
@@ -236,11 +243,6 @@ exports.deleteCategory = async (req, res) => {
         400
       );
     }
-
-    // حذف العلاقات مع العروض أولاً
-    await prisma.offerCategory.deleteMany({
-      where: { categoryId: id },
-    });
 
     // ثم حذف التصنيف
     await prisma.category.delete({ where: { id } });
